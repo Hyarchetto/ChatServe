@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatServe 聊天室</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="app">
+    <!-- ========== 登录界面 ========== -->
+    <div id="login">
+        <h2>ChatServe</h2>
+        <div class="login-box">
+            <p>加入聊天室</p>
+            <input id="room-input" type="text" placeholder="请输入房间号">
+            <input id="nick-input" type="text" placeholder="昵称（默认随机）">
+            <button id="join-btn">加入</button>
+        </div>
+    </div>
+
+    <!-- ========== 聊天界面 ========== -->
+    <div id="chat" style="display:none">
+        <div id="chat-header">
+            <div id="header-left">
+                <span id="conn-status" class="status-connected">● 已连接</span>
+                <span id="room-name"></span>
+            </div>
+            <div id="header-right">
+                <span id="member-count">在线: 0 人</span>
+                <button id="leave-btn">退出房间</button>
+            </div>
+        </div>
+        <div id="chat-body">
+            <div id="messages"></div>
+            <div id="member-list">
+                <div id="member-title">房间成员</div>
+                <div id="members"></div>
+            </div>
+        </div>
+        <div id="input-area">
+            <input id="msg-input" type="text" placeholder="输入消息..." autofocus>
+            <button id="send-btn">发送</button>
+        </div>
+    </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

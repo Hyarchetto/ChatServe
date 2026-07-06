@@ -1,0 +1,22 @@
+# Build
+build/
+cmake-build-*/
+*.o
+*.obj
+*.exe
+*.out
+*.app
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
