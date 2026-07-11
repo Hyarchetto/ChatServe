@@ -47,3 +47,18 @@ std::string WebSocketAppParser::build(const std::string& command,
                                        const std::string& param2) {
     return command + DELIMITER + param1 + DELIMITER + param2;
 }
+
+std::string WebSocketAppParser::build(const std::string& command,
+                                       const std::string& param1,
+                                       const std::string& param2,
+                                       const std::string& param3) {
+    return command + DELIMITER + param1 + DELIMITER + param2 + DELIMITER + param3;
+}
+
+std::string WebSocketAppParser::build(const std::string& command,
+                                       const std::string& param1,
+                                       const std::string& param2,
+                                       const std::string& param3,
+                                       const std::string& param4) {
+    return command + DELIMITER + param1 + DELIMITER + param2 + DELIMITER + param3 + DELIMITER + param4;
+}

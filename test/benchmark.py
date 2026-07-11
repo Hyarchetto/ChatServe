@@ -283,29 +283,79 @@ def _recv_ws_frame(sock, timeout=5):
         return None
 
 
+def _recv_all_frames(sock, count, timeout=3):
+    """接收多个 WebSocket 帧，返回帧列表"""
+    frames = []
+    sock.settimeout(timeout)
+    for _ in range(count):
+        try:
+            first = sock.recv(2)
+            if len(first) < 2:
+                break
+            opcode = first[0] & 0x0F
+            length = first[1] & 0x7F
+
+            if length == 126:
+                raw = sock.recv(2)
+                length = struct.unpack("!H", raw)[0]
+            elif length == 127:
+                raw = sock.recv(8)
+                length = struct.unpack("!Q", raw)[0]
+
+            payload = b""
+            while len(payload) < length:
+                chunk = sock.recv(length - len(payload))
+                if not chunk:
+                    break
+                payload += chunk
+
+            frames.append({"opcode": opcode, "data": payload})
+        except socket.timeout:
+            break
+    return frames
+
+
 def ws_worker(host, port, results, idx, timeout=5):
-    """单个 WS 工作线程：握手 + 发一条消息 + 收回复"""
+    """单个 WS 工作线程：握手 → JOIN 房间 → 发消息 → 收回复"""
     try:
         sock = _ws_handshake(host, port, timeout)
         if sock is None:
             results[idx] = ("FAIL", "握手失败")
             return
 
-        # 发送一条聊天消息
-        _send_ws_frame(sock, "hello")
+        # 1. JOIN 房间
+        _send_ws_frame(sock, f"JOIN|room_bench|tester_{idx}")
 
-        # 等待回复
-        frame = _recv_ws_frame(sock, timeout)
+        # 2. 收 JOIN 回复（OK + SYS + MEMBERS，最多 3 帧）
+        join_resp = _recv_all_frames(sock, 3, timeout)
+        if not join_resp:
+            sock.close()
+            results[idx] = ("FAIL", "JOIN 无回复")
+            return
+
+        join_ok = any(
+            b"OK|room_bench" in f["data"] for f in join_resp
+            if f["opcode"] == 0x01
+        )
+        if not join_ok:
+            sock.close()
+            results[idx] = ("FAIL", "JOIN 失败")
+            return
+
+        # 3. 发送一条聊天消息
+        _send_ws_frame(sock, "hello from tester_" + str(idx))
+
+        # 4. 等待回复（可能收到 SYS 或 MSG 广播）
+        reply = _recv_all_frames(sock, 3, timeout)
         sock.close()
 
-        if frame is None:
-            results[idx] = ("FAIL", "无回复")
-        elif frame["opcode"] == 0x09:
-            results[idx] = ("PONG", frame["data"])
-        elif frame["opcode"] == 0x01:
-            results[idx] = ("OK", frame["data"].decode(errors="replace"))
+        got_msg = any(
+            f["opcode"] == 0x01 for f in reply
+        )
+        if got_msg:
+            results[idx] = ("OK", reply)
         else:
-            results[idx] = ("OK", f"opcode={frame['opcode']}")
+            results[idx] = ("FAIL", "无消息回复")
     except Exception as e:
         results[idx] = ("FAIL", str(e))
 

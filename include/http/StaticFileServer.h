@@ -6,7 +6,8 @@
 
 #include "./HttpResponse.h"
 
-// 静态文件服务 — 根据路径读取文件并填充 HttpResponse
+// 静态文件服务 — 从磁盘读取文件并返回 HttpResponse
+// 错误页面的生成和重定向不在这里，各模块自己做
 class StaticFileServer {
 public:
     // 判断文件是否存在
@@ -14,13 +15,4 @@ public:
 
     // 读取文件并返回 HttpResponse，文件不存在返回 404
     static HttpResponse serve(const std::string& file_path);
-
-    // 错误页面
-    static HttpResponse not_found(const std::string& path = "");
-    static HttpResponse bad_request(const std::string& msg);
-    static HttpResponse server_error(const std::string& msg);
-    static HttpResponse method_not_allowed(const std::string& msg);
-
-    // 重定向
-    static HttpResponse redirect(const std::string& location);
 };

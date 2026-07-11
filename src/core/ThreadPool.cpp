@@ -1,18 +1,18 @@
 // 线程池
 #include "core/ThreadPool.h"
 
-ThdPool::ThdPool(size_t thread_num) {
+ThreadPool::ThreadPool(size_t thread_num) {
     if (thread_num == 0) thread_num = 1;
     for (size_t i = 0; i < thread_num; ++i) {
         this->workers_.emplace_back([this, i] { this->worker_loop(i); });
     }
 }
 
-ThdPool::~ThdPool() {
+ThreadPool::~ThreadPool() {
     this->shutdown();
 }
 
-void ThdPool::worker_loop(size_t index) {
+void ThreadPool::worker_loop(size_t index) {
     while (true) {
         std::function<void()> task;
         {
@@ -30,10 +30,12 @@ void ThdPool::worker_loop(size_t index) {
         }
         try {
             task();
-        } catch (const std::exception& e) {
+        } 
+        catch (const std::exception& e) {
             std::cerr << "ThreadPool: worker-" << index
                       << " 任务捕获异常: " << e.what() << std::endl;
-        } catch (...) {
+        } 
+        catch (...) {
             std::cerr << "ThreadPool: worker-" << index
                       << " 任务捕获未知异常" << std::endl;
         }
@@ -47,7 +49,7 @@ void ThdPool::worker_loop(size_t index) {
     }
 }
 
-void ThdPool::shutdown() {
+void ThreadPool::shutdown() {
     {
         std::unique_lock<std::mutex> lock(this->queue_mutex_);
         this->stop_.store(true, std::memory_order_release);
@@ -58,7 +60,7 @@ void ThdPool::shutdown() {
     }
 }
 
-void ThdPool::shutdown_now() {
+void ThreadPool::shutdown_now() {
     {
         std::unique_lock<std::mutex> lock(this->queue_mutex_);
         this->stop_.store(true, std::memory_order_release);
@@ -70,20 +72,20 @@ void ThdPool::shutdown_now() {
     }
 }
 
-size_t ThdPool::get_thread_num() const {
+size_t ThreadPool::get_thread_num() const {
     return this->workers_.size();
 }
 
-size_t ThdPool::task_count() const {
+size_t ThreadPool::task_count() const {
     std::lock_guard<std::mutex> lock(this->queue_mutex_);
     return this->tasks_.size();
 }
 
-bool ThdPool::is_running() const {
+bool ThreadPool::is_running() const {
     return !this->stop_.load(std::memory_order_acquire);
 }
 
-void ThdPool::wait_all() {
+void ThreadPool::wait_all() {
     std::unique_lock<std::mutex> lock(this->queue_mutex_);
     this->condition_.wait(lock, [this] {
         return this->tasks_.empty() && this->active_tasks_ == 0;

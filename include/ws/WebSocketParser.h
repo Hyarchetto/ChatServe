@@ -6,15 +6,7 @@
 #include <vector>
 #include <cstdint>
 
-// WebSocket Opcode
-enum class WebSocketOpcode : uint8_t {
-    CONTINUATION = 0x0,
-    TEXT         = 0x1,
-    BINARY       = 0x2,
-    CLOSE        = 0x8,
-    PING         = 0x9,
-    PONG         = 0xA,
-};
+#include "WebSocketOpcode.h"
 
 // WebSocket 分片累积状态 — RFC 6455 §5.4
 //
@@ -35,7 +27,8 @@ struct WebSocketFragmentState {
 // 帧解析结果
 struct WebSocketParseResult {
     size_t consumed_ = 0;                   // 消耗的字节数
-    std::vector<std::string> messages_;     // 解析出的完整消息列表
+    std::vector<std::string> messages_;     // TEXT 帧消息列表
+    std::vector<std::string> binary_messages_;  // BINARY 帧消息列表
     bool ping_ = false;
     std::string ping_payload_;
     bool close_ = false;

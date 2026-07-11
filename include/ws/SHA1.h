@@ -34,16 +34,13 @@ public:
         size_t idx = bit_count_ / 8 % 64;
         buffer_[idx++] = 0x80;
 
-        // 当前块放不下 8 字节 bit_count → 填满当前块并 transform，另开新块
         if (idx > 56) {
             std::memset(buffer_ + idx, 0, 64 - idx);
             transform(buffer_);
             idx = 0;
         }
 
-        // 从 idx 填充到 56（留最后 8 字节给 bit_count）
         std::memset(buffer_ + idx, 0, 56 - idx);
-        // 写入 64-bit bit count（大端序）
         for (int i = 7; i >= 0; --i) {
             buffer_[56 + (7 - i)] = (bits >> (i * 8)) & 0xFF;
         }

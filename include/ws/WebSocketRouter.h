@@ -11,6 +11,8 @@
 #include "../server/Connection.h"
 #include "../chatroom/Room.h"
 
+class FileManager;  // 前向声明
+
 // 待发送的定向消息（目标连接 + 已组帧数据）
 struct WebSocketTargetedMessage {
     std::shared_ptr<Connection> target_;
@@ -21,11 +23,12 @@ class WebSocketRouter {
 public:
     WebSocketRouter();
 
-    // 处理器：接收解析后的消息、发起连接、房间管理器，返回待发送消息列表
+    // 处理器：接收解析后的消息、发起连接、房间管理器、文件管理器，返回待发送消息列表
     using Handler = std::function<std::vector<WebSocketTargetedMessage>(
         const WebSocketAppMessage& msg,
         const std::shared_ptr<Connection>& conn,
-        RoomManager& room_mgr)>;
+        RoomManager& room_mgr,
+        FileManager& file_mgr)>;
 
     // 注册命令处理器
     void on(const std::string& command, Handler handler);
@@ -37,6 +40,7 @@ public:
     bool route(const WebSocketAppMessage& msg,
                const std::shared_ptr<Connection>& conn,
                RoomManager& room_mgr,
+               FileManager& file_mgr,
                std::vector<WebSocketTargetedMessage>& out) const;
 
 private:

@@ -272,7 +272,175 @@ body {
     font-size: 14px;
     cursor: pointer;
     transition: opacity 0.2s;
+    white-space: nowrap;
 }
 #send-btn:hover {
     opacity: 0.9;
+}
+
+/* ========== 文件发送按钮 ========== */
+#file-btn {
+    display: flex;
+    align-items: center;
+    padding: 8px;
+    cursor: pointer;
+    color: #88aadd;
+    border-radius: 8px;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+#file-btn:hover {
+    background: #1a4a7f;
+    color: #aaddff;
+}
+
+/* ========== 文件预览区 ========== */
+#file-preview {
+    display: flex;
+    align-items: center;
+    padding: 8px 16px;
+    background: #0a1a2e;
+    border-top: 1px solid #1a4a7f;
+    gap: 12px;
+    font-size: 13px;
+}
+.file-preview-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+.file-icon {
+    font-size: 18px;
+}
+#file-preview-name {
+    color: #ddd;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#file-preview-size {
+    color: #888;
+    white-space: nowrap;
+}
+.file-preview-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+.file-preview-actions button {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    border: none;
+    transition: opacity 0.2s;
+}
+#file-cancel-btn {
+    background: transparent;
+    border: 1px solid #666 !important;
+    color: #aaa;
+}
+#file-cancel-btn:hover {
+    background: #333;
+}
+#file-send-btn {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: white;
+}
+#file-send-btn:hover {
+    opacity: 0.9;
+}
+
+/* ========== 上传进度条 ========== */
+#upload-progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+}
+#upload-progress-bar {
+    flex: 1;
+    height: 6px;
+    background: #1a3a5f;
+    border-radius: 3px;
+    overflow: hidden;
+}
+#upload-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #667eea, #764ba2);
+    border-radius: 3px;
+    transition: width 0.2s;
+}
+#upload-progress-text {
+    color: #88aadd;
+    font-size: 12px;
+    white-space: nowrap;
+    min-width: 36px;
+    text-align: right;
+}
+
+/* ========== 文件消息卡片 ========== */
+.file-card {
+    background: #e8f4fd;
+    border: 1px solid #b6d4fe;
+    border-radius: 8px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+.msg.self .file-card {
+    background: #d1e7dd;
+    border-color: #a3cfaf;
+}
+.file-card-icon {
+    font-size: 28px;
+    flex-shrink: 0;
+}
+.file-card-info {
+    flex: 1;
+    min-width: 0;
+}
+.file-card-name {
+    font-size: 13px;
+    font-weight: bold;
+    color: #222;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.file-card-size {
+    font-size: 11px;
+    color: #666;
+}
+.file-card-dl {
+    padding: 6px 14px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    font-size: 12px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.file-card-dl:hover {
+    opacity: 0.9;
+}
+.file-card-dl:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.file-card-dl.downloading {
+    background: #ff9800;
+}
+.file-card-progress {
+    font-size: 11px;
+    color: #666;
+    white-space: nowrap;
 }

@@ -17,7 +17,7 @@ public:
     // 移除连接
     void del_num(const std::shared_ptr<Connection>& conn);
     // 获取当前在线连接列表
-    std::vector<std::shared_ptr<Connection>> get_live_Connections();
+    std::vector<std::shared_ptr<Connection>> get_live_connections();
 
 private:
     std::vector<std::weak_ptr<Connection>> Connections_;

@@ -11,13 +11,13 @@
 #include <atomic>
 #include <iostream>
 
-class ThdPool {
+class ThreadPool {
 public:
-    ThdPool(size_t thread_num = std::thread::hardware_concurrency());
-    ~ThdPool();
+    ThreadPool(size_t thread_num = std::thread::hardware_concurrency());
+    ~ThreadPool();
 
-    ThdPool(const ThdPool&) = delete;
-    ThdPool& operator=(const ThdPool&) = delete;
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
 
     // 提交任务，返回 future
     template<class F, class ...Args>
@@ -51,7 +51,7 @@ private:
 // ==================== 模板实现 ====================
 
 template<class F, class ...Args>
-std::future<typename std::invoke_result_t<F, Args...>> ThdPool::submit(F&& f, Args&&... args) {
+std::future<typename std::invoke_result_t<F, Args...>> ThreadPool::submit(F&& f, Args&&... args) {
     using return_type = typename std::invoke_result_t<F, Args...>;
 
     auto task = std::make_shared<std::packaged_task<return_type()>>(
@@ -78,7 +78,7 @@ std::future<typename std::invoke_result_t<F, Args...>> ThdPool::submit(F&& f, Ar
 }
 
 template<class F, class ...Args>
-bool ThdPool::try_submit(F&& f, Args&&... args) {
+bool ThreadPool::try_submit(F&& f, Args&&... args) {
     using return_type = typename std::invoke_result_t<F, Args...>;
 
     auto task = std::make_shared<std::packaged_task<return_type()>>(

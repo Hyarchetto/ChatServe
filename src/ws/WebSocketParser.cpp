@@ -92,14 +92,30 @@ WebSocketParseResult WebSocketParser::handle(const std::string& buffer,
             if (frag && frag->in_fragmented_) {
                 frag->buffer_.append(payload);
                 if (fin) {
-                    result.messages_.push_back(std::move(frag->buffer_));
+                    if (frag->first_opcode_ == WebSocketOpcode::BINARY) {
+                        result.binary_messages_.push_back(std::move(frag->buffer_));
+                    } else {
+                        result.messages_.push_back(std::move(frag->buffer_));
+                    }
                     frag->buffer_.clear();
                     frag->in_fragmented_ = false;
                 }
             }
             // 非法 continuation（无起始帧），丢弃
+        } else if (opcode == WebSocketOpcode::BINARY) {
+            if (fin) {
+                // 完整 binary 消息
+                result.binary_messages_.push_back(std::move(payload));
+            } else {
+                // binary 分片开始
+                if (frag) {
+                    frag->in_fragmented_ = true;
+                    frag->first_opcode_ = opcode;
+                    frag->buffer_ = std::move(payload);
+                }
+            }
         } else {
-            // TEXT 或 BINARY
+            // TEXT
             if (fin) {
                 // 完整消息
                 result.messages_.push_back(std::move(payload));

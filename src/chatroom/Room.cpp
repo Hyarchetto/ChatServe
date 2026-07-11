@@ -25,7 +25,7 @@ void Room::del_num(const std::shared_ptr<Connection>& conn) {
         this->Connections_.end());
 }
 
-std::vector<std::shared_ptr<Connection>> Room::get_live_Connections() {
+std::vector<std::shared_ptr<Connection>> Room::get_live_connections() {
     std::lock_guard<std::mutex> lock(this->mtx_);
     std::vector<std::shared_ptr<Connection>> live;
     for (auto& wp : this->Connections_) {
@@ -53,7 +53,7 @@ void RoomManager::remove_if_empty(const std::string& room_id) {
     std::lock_guard<std::mutex> lock(this->mtx_);
     auto it = this->rooms_.find(room_id);
     if (it != this->rooms_.end()) {
-        auto live = it->second->get_live_Connections();
+        auto live = it->second->get_live_connections();
         if (live.empty()) {
             this->rooms_.erase(it);
         }
@@ -69,7 +69,7 @@ void RoomManager::leave_room(const std::string& room_id,
 
     it->second->del_num(conn);
 
-    if (it->second->get_live_Connections().empty()) {
+    if (it->second->get_live_connections().empty()) {
         this->rooms_.erase(it);
     }
 }

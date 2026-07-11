@@ -1,7 +1,7 @@
 // WebSocket 握手升级响应构造（RFC 6455）
 // 本文件只做一件事：根据 HTTP Upgrade 请求构建 101 Switching Protocols 响应
 #include "ws/WebSocketUpgradeResponse.h"
-#include "core/SHA1.h"
+#include "ws/SHA1.h"
 
 // ==================== 握手升级响应 ====================
 

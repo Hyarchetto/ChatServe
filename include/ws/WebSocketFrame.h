@@ -4,7 +4,7 @@
 
 #include <string>
 
-#include "WebSocketParser.h"  // WebSocketOpcode
+#include "WebSocketOpcode.h"  // WebSocketOpcode
 
 // WebSocket 帧构造器
 class WebSocketFrame {
