@@ -128,10 +128,10 @@ function handleTextMessage(data) {
         if (idx === -1) return;
         const nick = rest.substring(0, idx);
         const text = rest.substring(idx + 1);
-        addChatMessage(nick, text);
-    }
-    else if (data.startsWith('SYS|')) {
-        const text = data.substring(4);
+        addChatMessage(nick, text, 'other');
+        }
+        else if (data.startsWith('SYS|')) {
+            const text = data.substring(4);
         if (text.startsWith('ERR|')) {
             addSystemMessage('❌ ' + text.substring(4));
         } else {
@@ -350,10 +350,10 @@ function finishDownload(fileId) {
 
 // ===================== 消息渲染 =====================
 
-function addChatMessage(nick, text) {
+function addChatMessage(nick, text, side) {
     const time = currentTime();
     const div = document.createElement('div');
-    div.className = nick === myNick ? 'msg self' : 'msg other';
+    div.className = 'msg ' + side;
 
     const header = document.createElement('div');
     header.className = 'msg-header';
@@ -385,10 +385,10 @@ function addSystemMessage(text) {
 }
 
 function addFileNotification(sender, fileId, filename, filesize) {
+    // 网络来的文件通知都在左侧
     const time = currentTime();
-    const isSelf = sender === myNick;
     const div = document.createElement('div');
-    div.className = isSelf ? 'msg self' : 'msg other';
+    div.className = 'msg other';
 
     const header = document.createElement('div');
     header.className = 'msg-header';
@@ -483,7 +483,7 @@ function sendMessage() {
     const text = msgInput.value.trim();
     if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-    addChatMessage(myNick, text);
+    addChatMessage(myNick, text, 'self');
     ws.send(text);
     msgInput.value = '';
     msgInput.focus();

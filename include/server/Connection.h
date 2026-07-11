@@ -19,7 +19,7 @@ public:
 
     // ---- WebSocket 状态 ----
     bool ws_mode_ = false;                      // 是否已升级为 WebSocket
-    WebSocketFragmentState ws_frag_;            // WebSocket 分片状态（分片消息跨多次 handle()，必须持久化）
+    WebSocketFragmentState ws_frag_;            // WebSocket 分片状态
 
     // ---- 聊天室状态 ----
     std::string room_id_;

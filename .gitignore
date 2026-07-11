@@ -24,3 +24,7 @@ __pycache__/
 
 # Claude
 .claude/
+
+# Logs
+*.log
+valgrind.out

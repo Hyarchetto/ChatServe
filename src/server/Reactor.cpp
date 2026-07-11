@@ -11,9 +11,7 @@
 
 // ======================================== 构造/析构 ========================================
 
-Reactor::Reactor()
-    : router_(&file_mgr_) {
-}
+Reactor::Reactor() : router_(&file_mgr_) {}
 
 Reactor::~Reactor() {
     this->loop_.quit();

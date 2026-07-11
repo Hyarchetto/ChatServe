@@ -8,8 +8,6 @@
 #include "./HttpRequest.h"
 #include "./HttpResponse.h"
 
-class FileManager;
-
 class Router {
 public:
     // 传 FileManager 进来，文件下载也走路由，不用 Reactor 硬编码路径
