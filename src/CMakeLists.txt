@@ -14,9 +14,6 @@ add_library(chat_common STATIC
     chatroom/Room.cpp
     filetransfer/FileManager.cpp
     server/Reactor.cpp
-    server/Acceptor.cpp
-    server/ConnectionRouter.cpp
-    server/MainReactor.cpp
 )
 
 target_include_directories(chat_common PUBLIC ${CMAKE_SOURCE_DIR}/include)
