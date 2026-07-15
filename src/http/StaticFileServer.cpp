@@ -20,11 +20,6 @@ static std::string mime_type(const std::string& path) {
     return "application/octet-stream";
 }
 
-bool StaticFileServer::exists(const std::string& file_path) {
-    std::ifstream file(file_path, std::ios::binary | std::ios::ate);
-    return file.is_open();
-}
-
 HttpResponse StaticFileServer::serve(const std::string& file_path) {
     HttpResponse resp;
 

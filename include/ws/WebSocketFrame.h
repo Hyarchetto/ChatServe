@@ -11,8 +11,10 @@ class WebSocketFrame {
 public:
     WebSocketFrame() = delete;
 
-    // 构造一个 WebSocket 帧（掩码由调用方控制，服务器发客户端无掩码）
+    // 构造一个 WebSocket 帧，服务器发客户端无需掩码
     static std::string build(WebSocketOpcode opcode,
-                              const std::string& payload,
-                              bool mask = false);
+                              const std::string& payload);
+
+    // 对数据应用 WebSocket 掩码 XOR，被 build 和 WebSocketParser 共用
+    static void apply_mask(uint8_t* data, size_t len, const uint8_t mask[4]);
 };

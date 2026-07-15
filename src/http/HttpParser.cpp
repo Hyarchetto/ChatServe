@@ -20,8 +20,7 @@ HttpResult HttpParser::handle(const std::string& buf) {
         if (!read_line(buf, pos, line)) {
             return result;  // INCOMPLETE
         }
-        std::istringstream iss(line);
-        if (!(iss >> result.request_.method_ >> result.request_.path_ >> result.request_.version_)) {
+        if (std::istringstream iss(line); !(iss >> result.request_.method_ >> result.request_.path_ >> result.request_.version_)) {
             result.type_ = HttpResultType::BAD_REQUEST;
             result.error_msg_ = "Invalid request line";
             return result;
@@ -56,10 +55,21 @@ HttpResult HttpParser::handle(const std::string& buf) {
 
     // ==================== 请求体 ====================
     {
-        int content_length = 0;
-        auto cl_it = result.request_.headers_.find("Content-Length");
-        if (cl_it != result.request_.headers_.end()) {
-            content_length = std::stoi(cl_it->second);
+        size_t content_length = 0;
+        if (auto cl_it = result.request_.headers_.find("Content-Length"); cl_it != result.request_.headers_.end()) {
+            try {
+                content_length = std::stoul(cl_it->second);
+            } 
+            catch (...) {
+                result.type_ = HttpResultType::BAD_REQUEST;
+                result.error_msg_ = "Invalid Content-Length";
+                return result;
+            }
+            if (content_length > 10 * 1024 * 1024) {
+                result.type_ = HttpResultType::BAD_REQUEST;
+                result.error_msg_ = "Request body too large";
+                return result;
+            }
         }
         if (content_length > 0) {
             size_t available = buf.size() - pos;
@@ -74,11 +84,11 @@ HttpResult HttpParser::handle(const std::string& buf) {
     // ==================== 完成 ====================
     {
         auto upgrade = result.request_.header("Upgrade");
-        auto Connection = result.request_.header("Connection");
-        if (upgrade == "websocket" &&
-            Connection.find("Upgrade") != std::string::npos) {
+        auto connection_hdr = result.request_.header("Connection");
+        if (upgrade == "websocket" && connection_hdr.find("Upgrade") != std::string::npos) {
             result.type_ = HttpResultType::WS_UPGRADE;
-        } else {
+        } 
+        else {
             result.type_ = HttpResultType::OK;
         }
         result.finished_ = pos;

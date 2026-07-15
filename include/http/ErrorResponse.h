@@ -11,5 +11,4 @@ public:
     static HttpResponse not_found(const std::string& path = "");
     static HttpResponse bad_request(const std::string& msg);
     static HttpResponse server_error(const std::string& msg);
-    static HttpResponse method_not_allowed(const std::string& msg);
 };

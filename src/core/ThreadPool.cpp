@@ -2,7 +2,9 @@
 #include "core/ThreadPool.h"
 
 ThreadPool::ThreadPool(size_t thread_num) {
-    if (thread_num == 0) thread_num = 1;
+    if (thread_num == 0) {
+        thread_num = 1;
+    }
     for (size_t i = 0; i < thread_num; ++i) {
         this->workers_.emplace_back([this, i] { this->worker_loop(i); });
     }

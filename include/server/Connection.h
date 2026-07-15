@@ -4,18 +4,19 @@
 #include <memory>
 #include <string>
 #include <functional>
+#include <atomic>
 
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "../http/HttpParser.h"
-#include "../ws/WebSocketParser.h"
+#include "../ws/WebSocketFragmentState.h"
 
 class Connection {
 public:
     int fd_;                                    // 套接字 fd
     std::string read_buf_;                      // 累积读取缓冲区
-    bool pending_close_ = false;                // 关闭信号
+    std::atomic<bool> pending_close_{false};    // 关闭信号
+    std::atomic<bool> alive_{true};             // 是否还在连接管理器中
 
     // ---- WebSocket 状态 ----
     bool ws_mode_ = false;                      // 是否已升级为 WebSocket
@@ -24,14 +25,14 @@ public:
     // ---- 聊天室状态 ----
     std::string room_id_;
     std::string nickname_;
-    
 
-    explicit Connection(int fd): fd_(fd){ 
-        set_nonblock(); 
+
+    explicit Connection(int fd): fd_(fd){
+        set_nonblock();
     }
 
     ~Connection(){
-        close(this->fd_);
+        if (fd_ >= 0) close(this->fd_);
     }
 
 private:

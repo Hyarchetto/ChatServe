@@ -1,8 +1,10 @@
-// WebSocket 应用层消息路由
+// WebSocket 应用层消息路由 — 独立窗口文件传输
 #include "ws/WebSocketRouter.h"
 #include "ws/WebSocketAppParser.h"
 #include "ws/WebSocketFrame.h"
-#include "filetransfer/FileManager.h"
+#include "server/Connection.h"
+#include "chatroom/Room.h"
+#include "transfer/TransferManager.h"
 
 
 WebSocketRouter::WebSocketRouter() {
@@ -10,10 +12,9 @@ WebSocketRouter::WebSocketRouter() {
     this->on("JOIN", [](const WebSocketAppMessage& msg,
                         const std::shared_ptr<Connection>& conn,
                         RoomManager& room_mgr,
-                        FileManager& /*file_mgr*/) -> std::vector<WebSocketTargetedMessage> {
+                        TransferManager& /*transfer_mgr*/) -> std::vector<WebSocketTargetedMessage> {
         std::vector<WebSocketTargetedMessage> results;
 
-        // 校验参数：JOIN|<room>|<nickname>
         if (msg.param_count() < 2 ||
             msg.param(0).empty() ||
             msg.param(1).empty()) {
@@ -29,15 +30,13 @@ WebSocketRouter::WebSocketRouter() {
         auto room = room_mgr.get_or_create(conn->room_id_);
         room->add_num(conn);
 
-        // ---------- 发给新加入者的确认 ----------
-        // OK|<room>|<nick> 告诉前端收到 JOIN 了
+        // 确认，带上服务端分配的 id -- fd
         results.push_back({conn,
             WebSocketFrame::build(WebSocketOpcode::TEXT,
-                WebSocketAppParser::build("OK", conn->room_id_, conn->nickname_))});
+                WebSocketAppParser::build("OK", conn->room_id_, conn->nickname_,
+                    std::to_string(conn->fd_)))});
 
-        // ---------- SYS 消息给其他人 ----------
-        // 纯显示用，让其他人在聊天框看到 "xxx 加入房间"
-        // 不参与成员列表的维护，成员列表只认 MEMBERS
+        // SYS 给其他人
         std::string sys = WebSocketFrame::build(WebSocketOpcode::TEXT,
             WebSocketAppParser::build("SYS", conn->nickname_ + " 加入房间"));
         for (auto& c : room->get_live_connections()) {
@@ -46,16 +45,13 @@ WebSocketRouter::WebSocketRouter() {
             }
         }
 
-        // ---------- MEMBERS 广播给所有人 ----------
-        // 成员列表的唯一权威来源
-        // 每次都全量推送，不搞增量增删，彻底避免同名用户导致列表不同步
-        // 新加入者拿到房间全部成员，老成员也拿到更新后的完整列表
+        // MEMBERS 全量广播
         {
             std::string joined;
             auto live = room->get_live_connections();
             for (size_t i = 0; i < live.size(); ++i) {
                 if (i > 0) joined += ",";
-                joined += live[i]->nickname_;
+                joined += std::to_string(live[i]->fd_) + ":" + live[i]->nickname_;
             }
             std::string members_frame = WebSocketFrame::build(WebSocketOpcode::TEXT,
                 WebSocketAppParser::build("MEMBERS", joined));
@@ -67,17 +63,18 @@ WebSocketRouter::WebSocketRouter() {
         return results;
     });
 
-    // ========== 默认处理器（裸文本 = 聊天消息） ==========
+    // ========== 默认处理器，裸文本作为聊天消息 ==========
     this->on_default([](const WebSocketAppMessage& msg,
                          const std::shared_ptr<Connection>& conn,
                          RoomManager& room_mgr,
-                         FileManager& /*file_mgr*/) -> std::vector<WebSocketTargetedMessage> {
+                         TransferManager& /*transfer_mgr*/) -> std::vector<WebSocketTargetedMessage> {
         std::vector<WebSocketTargetedMessage> results;
         if (conn->room_id_.empty()) return results;
 
         auto room = room_mgr.get_or_create(conn->room_id_);
         std::string wire = WebSocketFrame::build(WebSocketOpcode::TEXT,
-            WebSocketAppParser::build("MSG", conn->nickname_, msg.raw_));
+            WebSocketAppParser::build("MSG",
+                std::to_string(conn->fd_), conn->nickname_, msg.raw_));
 
         for (auto& c : room->get_live_connections()) {
             if (c->fd_ != conn->fd_) {
@@ -88,10 +85,11 @@ WebSocketRouter::WebSocketRouter() {
     });
 
     // ========== UPLOAD 处理器 ==========
+    // 仅注册文件元数据，不上传文件内容
     this->on("UPLOAD", [](const WebSocketAppMessage& msg,
                            const std::shared_ptr<Connection>& conn,
-                           RoomManager& /*room_mgr*/,
-                           FileManager& file_mgr) -> std::vector<WebSocketTargetedMessage> {
+                           RoomManager& room_mgr,
+                           TransferManager& transfer_mgr) -> std::vector<WebSocketTargetedMessage> {
         std::vector<WebSocketTargetedMessage> results;
         if (msg.param_count() < 3) return results;
 
@@ -100,130 +98,154 @@ WebSocketRouter::WebSocketRouter() {
         try { filesize = std::stoul(msg.param(1)); } catch (...) { return results; }
         std::string room_id = msg.param(2);
 
-        std::string file_id = file_mgr.init_upload(
+        std::string file_id = transfer_mgr.register_file(
             filename, filesize, room_id, conn->nickname_, conn->fd_);
         if (file_id.empty()) return results;
 
-        std::string resp = WebSocketFrame::build(WebSocketOpcode::TEXT,
-            WebSocketAppParser::build("UPOK", file_id));
-        results.push_back({conn, std::move(resp)});
-        return results;
-    });
+        // 回复 UPOK 给上传方
+        results.push_back({conn,
+            WebSocketFrame::build(WebSocketOpcode::TEXT,
+                WebSocketAppParser::build("UPOK", file_id))});
 
-    // ========== UPDONE 处理器（客户端主动通知上传完成） ==========
-    this->on("UPDONE", [](const WebSocketAppMessage& msg,
-                           const std::shared_ptr<Connection>& conn,
-                           RoomManager& room_mgr,
-                           FileManager& file_mgr) -> std::vector<WebSocketTargetedMessage> {
-        std::vector<WebSocketTargetedMessage> results;
-        if (msg.param_count() < 1) return results;
-
-        // 1. 尝试 finalize（如果 write_chunk 已自动完成，session 已不存在，返回空）
-        FileMeta meta = file_mgr.finalize(conn->fd_);
-        if (meta.file_id_.empty()) {
-            // 可能已经自动完成 → 仍然回复 DONE 表示确认
-            results.push_back({conn,
-                WebSocketFrame::build(WebSocketOpcode::TEXT,
-                    WebSocketAppParser::build("DONE", ""))});
-            return results;
-        }
-
-        // 2. 构造 FILE 通知，广播给房间其他人
+        // 广播 FILE 通知给房间其他人，末尾带上上传方 fd 作为唯一标识
         std::string notify = WebSocketFrame::build(WebSocketOpcode::TEXT,
             WebSocketAppParser::build("FILE",
-                meta.file_id_,
-                meta.filename_,
-                std::to_string(meta.filesize_),
-                meta.sender_nickname_));
+                {file_id, filename, std::to_string(filesize), conn->nickname_,
+                 std::to_string(conn->fd_)}));
 
-        auto room = room_mgr.get_or_create(meta.room_id_);
+        auto room = room_mgr.get_or_create(room_id);
         for (auto& c : room->get_live_connections()) {
             if (c->fd_ != conn->fd_) {
                 results.push_back({c, notify});
             }
         }
 
-        // 3. 回复发送者 DONE 确认
-        results.push_back({conn,
-            WebSocketFrame::build(WebSocketOpcode::TEXT,
-                WebSocketAppParser::build("DONE", meta.file_id_))});
-
         return results;
     });
 
-    // ========== UPCANCEL 处理器（取消上传） ==========
+    // ========== UPCANCEL 处理器 ==========
     this->on("UPCANCEL", [](const WebSocketAppMessage& /*msg*/,
                              const std::shared_ptr<Connection>& conn,
                              RoomManager& /*room_mgr*/,
-                             FileManager& file_mgr) -> std::vector<WebSocketTargetedMessage> {
+                             TransferManager& transfer_mgr) -> std::vector<WebSocketTargetedMessage> {
         std::vector<WebSocketTargetedMessage> results;
-        file_mgr.cancel_upload(conn->fd_);
+        transfer_mgr.unregister_by_uploader(conn->fd_);
         results.push_back({conn,
             WebSocketFrame::build(WebSocketOpcode::TEXT,
                 WebSocketAppParser::build("DONE", "cancelled"))});
         return results;
     });
 
-    // ========== DOWNLOAD 处理器（大文件分块传输） ==========
+    // ========== DOWNLOAD 处理器 ==========
+    // 启动独立窗口传输
     this->on("DOWNLOAD", [](const WebSocketAppMessage& msg,
                              const std::shared_ptr<Connection>& conn,
-                             RoomManager& /*room_mgr*/,
-                             FileManager& file_mgr) -> std::vector<WebSocketTargetedMessage> {
+                             RoomManager& room_mgr,
+                             TransferManager& transfer_mgr) -> std::vector<WebSocketTargetedMessage> {
         std::vector<WebSocketTargetedMessage> results;
         if (msg.param_count() < 1) return results;
 
         std::string file_id = msg.param(0);
-        FileMeta meta = file_mgr.get_meta(file_id);
-        if (meta.file_id_.empty() || !meta.completed_) {
+        auto reg = transfer_mgr.get_registration(file_id);
+        if (reg.file_id_.empty()) {
             results.push_back({conn,
                 WebSocketFrame::build(WebSocketOpcode::TEXT,
-                    WebSocketAppParser::build("SYS", "ERR|文件不存在或未完成"))});
+                    WebSocketAppParser::build("SYS", "ERR|文件不存在"))});
             return results;
         }
 
-        // 1. 先发文件元信息：DWINFO|file_id|filename|filesize
+        // 启动传输，获取初始窗口请求
+        uint64_t session_id = 0;
+        auto init_reqs = transfer_mgr.start_transfer(file_id, conn->fd_, session_id);
+        if (init_reqs.empty()) {
+            results.push_back({conn,
+                WebSocketFrame::build(WebSocketOpcode::TEXT,
+                    WebSocketAppParser::build("SYS", "ERR|无法启动传输 上传方可能已离线"))});
+            return results;
+        }
+
+        // DWSTART 给下载方
         results.push_back({conn,
             WebSocketFrame::build(WebSocketOpcode::TEXT,
-                WebSocketAppParser::build("DWINFO",
-                    meta.file_id_,
-                    meta.filename_,
-                    std::to_string(meta.filesize_)))});
+                WebSocketAppParser::build("DWSTART",
+                    reg.file_id_, reg.filename_, std::to_string(reg.filesize_)))});
 
-        // 2. 从内存读取文件并分块发送
-        static constexpr size_t CHUNK_SIZE = 4 * 1024 * 1024; // 4MB 每块
-
-        if (meta.data_.empty()) {
-            results.push_back({conn,
-                WebSocketFrame::build(WebSocketOpcode::TEXT,
-                    WebSocketAppParser::build("SYS", "ERR|文件读取失败"))});
-            return results;
+        // 在房间中找到上传方并发 DWREQ，带上 session_id
+        auto room = room_mgr.get_or_create(reg.room_id_);
+        for (auto& c : room->get_live_connections()) {
+            if (c->fd_ == reg.uploader_fd_) {
+                for (auto& req : init_reqs) {
+                    results.push_back({c,
+                        WebSocketFrame::build(WebSocketOpcode::TEXT,
+                            WebSocketAppParser::build("DWREQ",
+                                std::to_string(req.session_id_),
+                                req.file_id_,
+                                std::to_string(req.offset_),
+                                std::to_string(req.size_)))});
+                }
+                break;
+            }
         }
 
-        // 计算总块数
-        size_t total_chunks = (meta.filesize_ + CHUNK_SIZE - 1) / CHUNK_SIZE;
-        if (total_chunks > 1) {
-            // 多块 → 先发 DWCHUNK|file_id|total_chunks
-            results.push_back({conn,
-                WebSocketFrame::build(WebSocketOpcode::TEXT,
-                    WebSocketAppParser::build("DWCHUNK",
-                        meta.file_id_,
-                        std::to_string(total_chunks)))});
-        }
+        return results;
+    });
 
-        // 从内存缓冲区逐块发送 BINARY 帧
+    // ========== DWACK 处理器 ==========
+    // 下载方确认收到一个分块，触发下一个 DWREQ
+    // 协议: DWACK|<session_id>|<offset>
+    this->on("DWACK", [](const WebSocketAppMessage& msg,
+                          const std::shared_ptr<Connection>& conn,
+                          RoomManager& room_mgr,
+                          TransferManager& transfer_mgr) -> std::vector<WebSocketTargetedMessage> {
+        std::vector<WebSocketTargetedMessage> results;
+        if (msg.param_count() < 2) return results;
+
+        uint64_t session_id = 0;
         size_t offset = 0;
-        while (offset < meta.data_.size()) {
-            size_t bytes_this_chunk = std::min(CHUNK_SIZE, meta.data_.size() - offset);
+        try {
+            session_id = std::stoull(msg.param(0));
+            offset = std::stoul(msg.param(1));
+        } catch (...) { return results; }
+
+        auto ar = transfer_mgr.handle_ack(session_id, offset);
+        if (!ar.valid_) return results;
+
+        // 该下载方完成
+        if (ar.downloader_done_) {
             results.push_back({conn,
-                WebSocketFrame::build(WebSocketOpcode::BINARY,
-                    meta.data_.substr(offset, bytes_this_chunk))});
-            offset += bytes_this_chunk;
+                WebSocketFrame::build(WebSocketOpcode::TEXT,
+                    WebSocketAppParser::build("DWNDONE", ar.file_id_))});
         }
 
-        // 3. 完成通知：DWNDONE|file_id
-        results.push_back({conn,
-            WebSocketFrame::build(WebSocketOpcode::TEXT,
-                WebSocketAppParser::build("DWNDONE", meta.file_id_))});
+        // 发送下一个 DWREQ 给上传方
+        if (ar.has_next_req_) {
+            // 从文件注册获取房间信息以定位上传方 Connection
+            auto reg = transfer_mgr.get_registration(ar.file_id_);
+            bool found = false;
+            if (!reg.file_id_.empty()) {
+                auto room = room_mgr.get_or_create(reg.room_id_);
+                for (auto& c : room->get_live_connections()) {
+                    if (c->fd_ == ar.next_req_uploader_fd_) {
+                        auto dwreq = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                            WebSocketAppParser::build("DWREQ",
+                                std::to_string(ar.next_req_session_id_),
+                                ar.file_id_,
+                                std::to_string(ar.next_req_offset_),
+                                std::to_string(ar.next_req_size_)));
+                        results.push_back({c, std::move(dwreq)});
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            // 上传方已不在房间，通知下载方
+            if (!found) {
+                results.push_back({conn,
+                    WebSocketFrame::build(WebSocketOpcode::TEXT,
+                        WebSocketAppParser::build("DWERR",
+                            ar.file_id_, "上传方已离开，下载失败"))});
+            }
+        }
 
         return results;
     });
@@ -240,20 +262,19 @@ void WebSocketRouter::on_default(Handler handler) {
 bool WebSocketRouter::route(const WebSocketAppMessage& msg,
                              const std::shared_ptr<Connection>& conn,
                              RoomManager& room_mgr,
-                             FileManager& file_mgr,
+                             TransferManager& transfer_mgr,
                              std::vector<WebSocketTargetedMessage>& out) const {
-    out.clear();
 
     if (msg.is_command()) {
         auto it = this->handlers_.find(msg.command_);
         if (it != this->handlers_.end()) {
-            out = it->second(msg, conn, room_mgr, file_mgr);
+            out = it->second(msg, conn, room_mgr, transfer_mgr);
             return true;
         }
     }
 
     if (this->default_handler_) {
-        out = this->default_handler_(msg, conn, room_mgr, file_mgr);
+        out = this->default_handler_(msg, conn, room_mgr, transfer_mgr);
         return true;
     }
 

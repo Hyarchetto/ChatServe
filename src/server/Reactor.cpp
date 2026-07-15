@@ -1,38 +1,48 @@
 // 单 Reactor 多线程 TCP 服务器
-// 所有连接在同一个 EventLoop 里管理
-// HTTP 请求解析后丢线程池做路由，IO 线程只负责收发
-// WebSocket 帧解析后也在线程池里处理业务，结果通过 run_in_loop 投回 IO 线程发送
-//
-// 跨线程通信全靠 EventLoop::run_in_loop，没有共享锁
+// 所有连接在同一个 EventLoop 里管
+// HTTP 解析后丢线程池路由，IO 线程只管收发
+// WebSocket 帧解析后也丢线程池处理，结果用 run_in_loop 投回 IO 线程发
+// TEXT 和 BINARY 在同一个线程池任务中顺序处理，避免 CHUNK 和数据的竞态
+// 发送队列分优先级：TEXT 控制帧优先于 BINARY 文件数据
 #include "server/Reactor.h"
+#include "http/HttpParser.h"
+#include "http/ErrorResponse.h"
+#include "ws/WebSocketParser.h"
+#include "ws/WebSocketFrame.h"
+#include "ws/WebSocketUpgradeResponse.h"
+#include "ws/WebSocketAppParser.h"
 
 #include <iostream>
 #include <cstdio>
 
 // ======================================== 构造/析构 ========================================
 
-Reactor::Reactor() : router_(&file_mgr_) {}
+Reactor::Reactor() {}
 
 Reactor::~Reactor() {
-    this->loop_.quit();
-    this->works_.shutdown();
+    this->stop();
 }
 
 bool Reactor::init() {
     return this->loop_.init();
 }
 
+void Reactor::stop() {
+    this->loop_.quit();
+    this->works_.shutdown();
+}
+
 // ======================================== 监听 ========================================
 
 void Reactor::start_listen(int port) {
-    this->listenfd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (this->listenfd_ < 0) {
+    int listenfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listenfd < 0) {
         perror("socket error");
         return;
     }
 
     int opt = 1;
-    setsockopt(this->listenfd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
@@ -40,45 +50,52 @@ void Reactor::start_listen(int port) {
     server_addr.sin_port = htons(port);
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(this->listenfd_, (struct sockaddr*)&server_addr,
-             sizeof(server_addr)) < 0) {
+    if (bind(listenfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         perror("bind error");
-        close(this->listenfd_);
-        this->listenfd_ = -1;
+        close(listenfd);
         return;
     }
-    if (listen(this->listenfd_, 1024) < 0) {
+    if (listen(listenfd, 1024) < 0) {
         perror("listen error");
-        close(this->listenfd_);
-        this->listenfd_ = -1;
+        close(listenfd);
         return;
     }
 
-    int flags = fcntl(this->listenfd_, F_GETFL, 0);
-    fcntl(this->listenfd_, F_SETFL, flags | O_NONBLOCK);
+    int flags = fcntl(listenfd, F_GETFL, 0);
+    fcntl(listenfd, F_SETFL, flags | O_NONBLOCK);
 
-    this->loop_.add_event(this->listenfd_, EPOLLIN | EPOLLET,
-        [this]() { this->accept_connections(); });
+    this->loop_.add_event(listenfd,
+                          EPOLLIN | EPOLLET,
+                          [this, listenfd]() { this->accept_connections(listenfd);});
 
     std::cout << "服务器开始监听 " << port << std::endl;
     std::cout << "------------------------------------------" << std::endl;
 }
 
-void Reactor::accept_connections() {
+void Reactor::accept_connections(int listenfd) {
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
 
     while (true) {
-        int clientfd = accept(this->listenfd_,
-                              (struct sockaddr*)&client_addr,
-                              &client_len);
-        if (clientfd < 0) {
-            if (errno == EAGAIN) break;
-            if (errno == EINTR) continue;
-            perror("accept error");
-            break;
+        // 错误处理
+        if (int clientfd = accept(listenfd, (struct sockaddr*)&client_addr, &client_len); 
+                clientfd < 0) {
+
+            if (errno == EAGAIN) {
+                break;
+            }
+            else if (errno == EINTR) {
+                continue;
+            }
+            else{
+                perror("accept error");
+                break;
+            }
         }
-        this->add_connection(clientfd);
+        // 正常情况
+        else{
+            this->add_connection(clientfd);
+        }
     }
 }
 
@@ -89,64 +106,57 @@ void Reactor::loop() {
 // ======================================== 连接管理 ========================================
 
 void Reactor::add_connection(int fd) {
-    this->loop_.run_in_loop([this, fd]() {
-        auto conn = std::make_shared<Connection>(fd);
-        this->connections_[fd] = conn;
-
-        this->loop_.add_event(fd, EPOLLIN | EPOLLET,
-            [this, conn]() { this->handle_clientfd(conn); },
-            [this, conn]() { this->handle_write(conn); },
-            [this, conn]() { this->disconnect_connection(conn); });
-    });
+    auto conn = std::make_shared<Connection>(fd);
+    this->connections_[fd] = conn;
+    this->conn_registry_.add(fd, conn);
+    this->loop_.add_event(fd, EPOLLIN | EPOLLET,
+        [this, conn]() { this->handle_clientfd(conn); },
+        [this, conn]() { this->handle_write(conn); },
+        [this, conn]() { this->disconnect_connection(conn); });
 }
 
 void Reactor::del_connection(const std::shared_ptr<Connection>& conn) {
     int fd = conn->fd_;
+    conn->alive_ = false;
+    this->conn_registry_.remove(fd);
     this->pending_writes_.erase(fd);
     this->connections_.erase(fd);
     this->loop_.del_event(fd);
 }
 
-// ======================================== 跨线程响应投递 ========================================
-
-void Reactor::post_response(int fd, std::string data) {
-    this->loop_.run_in_loop([this, fd, data = std::move(data)]() {
-        auto it = this->connections_.find(fd);
-        if (it != this->connections_.end()) {
-            this->queue_resp_.emplace(
-                PendingResponse{it->second, std::move(data)});
-            this->flush_responses();
-        }
-    });
-}
-
-void Reactor::post_responses(const std::vector<int>& fds,
-                              const std::string& data) {
-    this->loop_.run_in_loop([this, fds, data]() {
-        for (int fd : fds) {
-            auto it = this->connections_.find(fd);
-            if (it != this->connections_.end()) {
-                this->queue_resp_.emplace(
-                    PendingResponse{it->second, data});
-            }
-        }
-        this->flush_responses();
-    });
-}
-
 // ======================================== 响应发送 ========================================
 
-void Reactor::flush_responses() {
-    std::queue<PendingResponse> local_queue{};
-    std::swap(local_queue, this->queue_resp_);
+void Reactor::push_response(const std::shared_ptr<Connection>& conn, std::string data, bool is_high_priority) {
+    // 根据信息类型，放入不同优先度的响应队列
+    if (is_high_priority) {
+        this->queue_high_.emplace(PendingResponse{conn, std::move(data)});
+    } 
+    else {
+        this->queue_low_.emplace(PendingResponse{conn, std::move(data)});
+    }
+}
 
-    while (!local_queue.empty()) {
-        auto item = std::move(local_queue.front());
-        local_queue.pop();
+void Reactor::drain_one(std::queue<PendingResponse>& q,
+                        std::function<void(const std::shared_ptr<Connection>&)> del_connection) {
+
+    std::queue<Reactor::PendingResponse> local{};
+    std::swap(local, q);
+
+    // 跟踪因 EAGAIN 未发完的 fd，跳过后续同 fd 消息避免帧交织
+    std::unordered_set<int> pending_fds;
+
+    while (!local.empty()) {
+        auto item = std::move(local.front());
+        local.pop();
 
         int fd = item.conn_->fd_;
-
         if (!this->loop_.has_event(fd)) {
+            continue;
+        }
+
+        // 该 fd 上还有未发完数据，将消息放回队列等 EPOLLOUT 恢复后再发
+        if (pending_fds.count(fd)) {
+            q.push(std::move(item));
             continue;
         }
 
@@ -155,20 +165,24 @@ void Reactor::flush_responses() {
         ssize_t sent = 0;
 
         while (sent < total) {
-            ssize_t n = send(fd, wire.data() + sent, total - sent, 0);
-
-            if (n > 0) {
+            if (ssize_t n = send(fd, wire.data() + sent, total - sent, 0);
+                        n > 0) {
                 sent += n;
-            } else if (n == 0) {
+            }
+            else if (n == 0) {
                 perror("send: 合法失败");
                 break;
-            } else {
+            }
+            else {
                 if (errno == EAGAIN) {
+                    pending_fds.insert(fd);
                     break;
-                } else if (errno == EPIPE || errno == ECONNRESET) {
+                }
+                else if (errno == EPIPE) {
                     item.conn_->pending_close_ = true;
                     sent = total;
-                } else {
+                }
+                else {
                     perror("send");
                     item.conn_->pending_close_ = true;
                     sent = total;
@@ -177,19 +191,38 @@ void Reactor::flush_responses() {
         }
 
         if (sent >= total) {
+            // 如果发送完并存在关闭信号，断开连接
             if (item.conn_->pending_close_) {
-                this->del_connection(item.conn_);
+                del_connection(item.conn_);
             }
-        } else {
+        }
+        // 为没发完的连接注册写事件
+        else {
+            // 将剩余信息记录到 pending_writes_
             std::string remainder = wire.substr(sent);
-            auto [it, inserted] = this->pending_writes_.try_emplace(
-                fd, std::move(remainder));
+            auto [it, inserted] = this->pending_writes_.try_emplace(fd, std::move(remainder));
             if (!inserted) {
                 it->second.append(wire.substr(sent));
             }
+            // 注册写事件
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET | EPOLLOUT);
+            // 立即尝试冲刷——解决 EPOLLET 竞态：socket 在 EAGAIN 与 mod_event
+            // 之间变可写时不会再次触发 EPOLLOUT
+            this->handle_write(item.conn_);
         }
     }
+}
+// 高优先的信息先发，低优先后发，虽然串行感觉有点自欺欺人
+void Reactor::flush_responses() {
+    if (this->flushing_) return;
+    this->flushing_ = true;
+    // 高优先级队列：聊天消息、房间管理、文件控制等 TEXT 帧
+    drain_one(this->queue_high_,
+              [this](const auto& c) { this->del_connection(c); });
+    // 低优先级队列：BINARY 文件数据块及其 DWDATA 元数据
+    drain_one(this->queue_low_,
+              [this](const auto& c) { this->del_connection(c); });
+    this->flushing_ = false;
 }
 
 // ======================================== 写事件回调 ========================================
@@ -198,30 +231,31 @@ void Reactor::handle_write(const std::shared_ptr<Connection>& conn) {
     int fd = conn->fd_;
 
     auto it = this->pending_writes_.find(fd);
-    if (it == this->pending_writes_.end()) {
-        return;
-    }
+    if (it == this->pending_writes_.end()) return;
 
     std::string& data = it->second;
     ssize_t total = data.size();
     ssize_t sent = 0;
 
     while (sent < total) {
-        ssize_t n = send(fd, data.data() + sent, total - sent, 0);
-
-        if (n > 0) {
+        if (ssize_t n = send(fd, data.data() + sent, total - sent, 0);
+                    n > 0) {
             sent += n;
-        } else if (n == 0) {
+        } 
+        else if (n == 0) {
             perror("send: 合法失败");
             break;
-        } else {
+        } 
+        else {
             if (errno == EAGAIN) {
                 break;
-            } else if (errno == EPIPE || errno == ECONNRESET) {
+            }
+            else if (errno == EPIPE) {
                 this->pending_writes_.erase(fd);
                 this->del_connection(conn);
                 return;
-            } else {
+            } 
+            else {
                 perror("send");
                 this->pending_writes_.erase(fd);
                 this->del_connection(conn);
@@ -229,60 +263,21 @@ void Reactor::handle_write(const std::shared_ptr<Connection>& conn) {
             }
         }
     }
-
+    // 发送完成
     if (sent >= total) {
         this->pending_writes_.erase(fd);
-
+        // 如果句柄还有效就删除写事件
         if (this->loop_.has_event(fd)) {
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET);
         }
-
+        // 连接可写了，处理之前因 EAGAIN 被重入队列的消息
+        this->flush_responses();
         if (conn->pending_close_) {
             this->del_connection(conn);
         }
-    } else {
+    } 
+    else {
         data.erase(0, sent);
-    }
-}
-
-// ======================================== 文件完成通知广播 ========================================
-
-void Reactor::broadcast_file_notification(const std::string& file_id,
-                                          int exclude_fd) {
-    FileMeta meta = this->file_mgr_.get_meta(file_id);
-    if (meta.file_id_.empty()) return;
-
-    std::string notify = WebSocketFrame::build(WebSocketOpcode::TEXT,
-        WebSocketAppParser::build("FILE",
-            meta.file_id_,
-            meta.filename_,
-            std::to_string(meta.filesize_),
-            meta.sender_nickname_));
-
-    auto room = this->room_mgr_.get_or_create(meta.room_id_);
-
-    // 单 Reactor，所有连接都在本地，不需要按 Reactor 分组
-    std::vector<int> target_fds;
-    auto live = room->get_live_connections();
-    for (auto& c : live) {
-        if (c->fd_ != exclude_fd) {
-            target_fds.push_back(c->fd_);
-        }
-    }
-
-    if (!target_fds.empty()) {
-        // 直接用 run_in_loop 在 IO 线程发
-        // 因为本函数可能在 thread pool 里被调用
-        this->loop_.run_in_loop([this, fds = std::move(target_fds), notify]() {
-            for (int fd : fds) {
-                auto it = this->connections_.find(fd);
-                if (it != this->connections_.end()) {
-                    this->queue_resp_.emplace(
-                        PendingResponse{it->second, notify});
-                }
-            }
-            this->flush_responses();
-        });
     }
 }
 
@@ -293,14 +288,18 @@ bool Reactor::read_data(const std::shared_ptr<Connection>& conn) {
     char temp_buffer[BUFFER_SIZE];
 
     while (true) {
-        ssize_t bytes_recv = recv(clientfd, temp_buffer, sizeof(temp_buffer), 0);
-        if (bytes_recv > 0) {
+        if (ssize_t bytes_recv = recv(clientfd, temp_buffer, sizeof(temp_buffer), 0);
+                    bytes_recv > 0) {
             conn->read_buf_.append(temp_buffer, bytes_recv);
-        } else if (bytes_recv == 0) {
+        } 
+        else if (bytes_recv == 0) {
             this->disconnect_connection(conn);
             return false;
-        } else {
-            if (errno == EAGAIN) break;
+        } 
+        else {
+            if (errno == EAGAIN) {
+                break;
+            }
             perror("recv");
             this->disconnect_connection(conn);
             return false;
@@ -318,9 +317,11 @@ void Reactor::handle_http(const std::shared_ptr<Connection>& conn) {
         HttpResult result = HttpParser::handle(conn->read_buf_);
 
         switch (result.type_) {
-            case HttpResultType::INCOMPLETE:
+            // 未完成直接结束
+            case HttpResultType::INCOMPLETE:{
                 return;
-
+            }
+            // 错误的 HTTP 请求可能是网络问题或者网络攻击，直接断开好了
             case HttpResultType::BAD_REQUEST: {
                 auto resp = ErrorResponse::bad_request(result.error_msg_);
                 std::string wire = resp.serialize();
@@ -328,34 +329,34 @@ void Reactor::handle_http(const std::shared_ptr<Connection>& conn) {
                 this->del_connection(conn);
                 return;
             }
-
+            // 处理 WebSocket 协议升级请求
             case HttpResultType::WS_UPGRADE: {
+                // 构建并发送响应
                 auto resp = WebSocketUpgradeResponse::build(result.request_);
                 std::string wire = resp.serialize();
                 send(clientfd, wire.data(), wire.size(), 0);
-
+                // 如果响应结果的状态码为 101，说明协议升级成功
                 if (resp.status_ == 101) {
                     conn->read_buf_.erase(0, result.finished_);
+                    // 将连接模式切换成 WebSocket 协议
                     conn->ws_mode_ = true;
-                } else {
+                } 
+                // 升级失败直接断开连接
+                else {
                     this->del_connection(conn);
                 }
                 return;
             }
-
+            // 处理普通的 HTTP 协议
             case HttpResultType::OK: {
                 conn->read_buf_.erase(0, result.finished_);
-
-                // 所有 HTTP 请求统一走 Router
-                // 文件下载也由 Router 内部处理
-                this->works_.submit(
-                    [this, conn, req = std::move(result.request_)]() {
+                // 提交给线程池解析，生成响应
+                this->works_.submit([this, conn, req = std::move(result.request_)]() {
                     HttpResponse resp = this->router_.handle(req);
                     std::string wire = resp.serialize();
-                    this->loop_.run_in_loop(
-                        [this, conn, wire = std::move(wire)]() {
-                        this->queue_resp_.emplace(
-                            PendingResponse{conn, std::move(wire)});
+                    // 获取响应再线程池将后续的响应工作交给事件循环
+                    this->loop_.run_in_loop([this, conn, wire = std::move(wire)]() {
+                        this->push_response(conn, std::move(wire), true);
                         this->flush_responses();
                     });
                 });
@@ -366,229 +367,287 @@ void Reactor::handle_http(const std::shared_ptr<Connection>& conn) {
 }
 
 // ======================================== WebSocket 帧处理 ========================================
+// TEXT 和 BINARY 在同一个线程池任务中顺序处理
+// TEXT 统一走 WebSocketRouter 路由，含 CHUNK 命令
+// BINARY 数据通过 TransferManager 转发给下载方
 
 void Reactor::handle_ws(const std::shared_ptr<Connection>& conn) {
     auto ws_result = WebSocketParser::handle(conn->read_buf_, &conn->ws_frag_);
     conn->read_buf_.erase(0, ws_result.consumed_);
 
-    // BINARY 帧 = 文件上传数据
-    for (auto& chunk : ws_result.binary_messages_) {
-        this->works_.submit([this, conn, chunk = std::move(chunk)]() {
-            auto result = this->file_mgr_.write_chunk(conn->fd_, chunk);
-            if (result.received_ > 0) {
-                std::string ack = WebSocketFrame::build(
-                    WebSocketOpcode::TEXT,
-                    WebSocketAppParser::build("UPCK",
-                        std::to_string(result.received_)));
-                this->loop_.run_in_loop(
-                    [this, conn, ack = std::move(ack),
-                     completed = result.completed_,
-                     file_id = result.file_id_]() {
-                    this->queue_resp_.emplace(
-                        PendingResponse{conn, std::move(ack)});
+    bool has_binary = !ws_result.binary_messages_.empty();
+    bool has_text = !ws_result.messages_.empty();
+    bool has_ctrl = ws_result.ping_ || ws_result.close_;
 
-                    if (completed) {
-                        this->broadcast_file_notification(
-                            file_id, conn->fd_);
+    if (!has_binary && !has_text && !has_ctrl) return;
+
+    this->works_.submit([this, conn,
+                         binary = std::move(ws_result.binary_messages_),
+                         msgs = std::move(ws_result.messages_),
+                         ping = ws_result.ping_,
+                         ping_payload = std::move(ws_result.ping_payload_),
+                         close = ws_result.close_,
+                         close_payload = std::move(ws_result.close_payload_)]() {
+        std::vector<WebSocketTargetedMessage> text_results;
+        std::vector<std::function<void()>> io_actions;
+
+        // ---- 1. PONG ----
+        if (ping) {
+            std::string pong = WebSocketFrame::build(WebSocketOpcode::PONG, ping_payload);
+            io_actions.push_back([this, conn, pong = std::move(pong)]() {
+                this->push_response(conn, std::move(pong), true);
+            });
+        }
+
+        // ---- 2. 文本消息和文件流 - 全部通过 WebSocketRouter ----
+        // 每条消息单独转发，route 内部 out = handler() 会替换而非追加
+        for (auto& text : msgs) {
+            std::vector<WebSocketTargetedMessage> per_msg;
+            this->ws_router_.route(WebSocketAppParser::parse(text), conn,
+                                   this->room_mgr_,
+                                   this->transfer_mgr_,
+                                   per_msg);
+            text_results.insert(text_results.end(),
+                                std::make_move_iterator(per_msg.begin()),
+                                std::make_move_iterator(per_msg.end()));
+        }
+
+        // ---- 3. BINARY 数据 - 检查是否为传输分块 ----
+        for (auto& chunk : binary) {
+            auto result = this->transfer_mgr_.handle_chunk_data(chunk);
+            if (result.valid_) {
+                // 在线程池中立即将 fd 解析为 shared_ptr，避免 IO 线程执行时 fd 被重用
+                std::shared_ptr<Connection> dl_conn;
+                if (auto c = this->conn_registry_.get(result.downloader_fd_)) {
+                    dl_conn = std::move(c);
+                }
+                if (dl_conn) {
+                    std::string dwdata = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                        WebSocketAppParser::build("DWDATA",
+                            std::to_string(result.session_id_),
+                            result.file_id_,
+                            std::to_string(result.offset_),
+                            std::to_string(result.size_)));
+                    auto forward_data = TransferManager::wrap_chunk_data(
+                        result.session_id_, result.offset_, result.data_);
+                    std::string bin = WebSocketFrame::build(WebSocketOpcode::BINARY,
+                                                            forward_data);
+                    io_actions.push_back([this, dl_conn,
+                                          dwdata = std::move(dwdata),
+                                          bin = std::move(bin)]() {
+                        if (dl_conn->alive_) {
+                            this->push_response(dl_conn, std::move(dwdata), false);
+                            this->push_response(dl_conn, std::move(bin), false);
+                        }
+                    });
+                }
+                // 滑动窗口有空位时发送下一个 DWREQ 给上传方
+                if (result.has_next_req_) {
+                    if (auto uploader_conn = this->conn_registry_.get(result.next_req_uploader_fd_)) {
+                        std::string dwreq = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                            WebSocketAppParser::build("DWREQ",
+                                std::to_string(result.next_req_session_id_),
+                                result.file_id_,
+                                std::to_string(result.next_req_offset_),
+                                std::to_string(result.next_req_size_)));
+                        io_actions.push_back([this, uploader_conn, dwreq = std::move(dwreq)]() {
+                            if (uploader_conn->alive_) {
+                                this->push_response(uploader_conn, std::move(dwreq), true);
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        // ---- 4. 投递 TEXT 路由结果，全为高优先级 ----
+        if (!text_results.empty()) {
+            io_actions.push_back([this, results = std::move(text_results)]() {
+                for (auto& r : results) {
+                    this->push_response(r.target_, std::move(r.data_), true);
+                }
+            });
+        }
+
+        // ---- 5. CLOSE 帧 -- 必须在 io_actions 刷新前处理，否则 DWERR 被丢弃
+        if (close) {
+            auto cancel_info = this->transfer_mgr_.cancel_by_fd(conn->fd_);
+            for (auto& sc : cancel_info.cancelled_) {
+                if (auto oc = this->conn_registry_.get(sc.orphaned_downloader_fd_)) {
+                    std::string dwerr = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                        WebSocketAppParser::build("DWERR", sc.file_id_, "上传方已离开，下载失败"));
+                    io_actions.push_back([this, oc, dwerr = std::move(dwerr)]() {
+                        if (oc->alive_) {
+                            this->push_response(oc, std::move(dwerr), true);
+                        }
+                    });
+                }
+            }
+
+            // 捕获本地副本避免与 IO 线程的 disconnect 竞争
+            std::string room_id = conn->room_id_;
+            std::string nick = conn->nickname_;
+
+            if (!room_id.empty()) {
+                auto remaining = this->room_mgr_.leave_room(room_id, conn);
+                conn->room_id_.clear();
+
+                if (!remaining.empty()) {
+                    std::string sys = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                        WebSocketAppParser::build("SYS", nick + " 离开房间"));
+
+                    std::string joined;
+                    for (size_t i = 0; i < remaining.size(); ++i) {
+                        if (i > 0) joined += ",";
+                        joined += std::to_string(remaining[i]->fd_) + ":" + remaining[i]->nickname_;
+                    }
+                    std::string members_frame = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                        WebSocketAppParser::build("MEMBERS", joined));
+
+                    std::vector<std::shared_ptr<Connection>> targets;
+                    for (auto& c : remaining) {
+                        if (auto cc = this->conn_registry_.get(c->fd_)) {
+                            targets.push_back(std::move(cc));
+                        }
                     }
 
-                    this->flush_responses();
-                });
-            }
-        });
-    }
+                    // LEAVE 帧用于客户端精确匹配上传方离开
+                    std::string leave_frame = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                        WebSocketAppParser::build("LEAVE",
+                            std::to_string(conn->fd_), nick));
 
-    // TEXT 消息 + 控制帧
-    if (!ws_result.messages_.empty() ||
-        ws_result.ping_ || ws_result.close_) {
-        this->works_.submit(
-            [this, conn,
-             msgs = std::move(ws_result.messages_),
-             ping = ws_result.ping_,
-             ping_payload = std::move(ws_result.ping_payload_),
-             close = ws_result.close_,
-             close_payload = std::move(ws_result.close_payload_)]() {
-
-            // PONG
-            if (ping) {
-                std::string pong = WebSocketFrame::build(
-                    WebSocketOpcode::PONG, ping_payload);
-                this->loop_.run_in_loop(
-                    [this, conn, pong = std::move(pong)]() {
-                    this->queue_resp_.emplace(
-                        PendingResponse{conn, std::move(pong)});
-                    this->flush_responses();
-                });
-            }
-
-            // 路由应用层消息
-            for (auto& text : msgs) {
-                WebSocketAppMessage app_msg =
-                    this->ws_app_parser_.parse(text);
-                std::vector<WebSocketTargetedMessage> results;
-                if (this->ws_router_.route(app_msg, conn,
-                                           this->room_mgr_,
-                                           this->file_mgr_,
-                                           results)) {
-                    this->loop_.run_in_loop(
-                        [this, results = std::move(results)]() {
-                        for (auto& r : results) {
-                            // 单 Reactor，所有连接都在本地
-                            // 直接入队就行，不用查 ConnectionRouter
-                            this->queue_resp_.emplace(
-                                PendingResponse{
-                                    std::move(r.target_),
-                                    std::move(r.data_)});
+                    this->loop_.run_in_loop([this, targets = std::move(targets),
+                                             leave_frame,
+                                             sys, members_frame]() {
+                        for (auto& c : targets) {
+                            if (c->alive_) {
+                                this->push_response(c, leave_frame, true);
+                                this->push_response(c, sys, true);
+                                this->push_response(c, members_frame, true);
+                            }
                         }
                         this->flush_responses();
                     });
                 }
             }
 
-            // CLOSE 帧
-            if (close) {
-                this->file_mgr_.cancel_upload(conn->fd_);
+            conn->pending_close_ = true;
+            std::string close_frame = WebSocketFrame::build(WebSocketOpcode::CLOSE, close_payload);
+            this->loop_.run_in_loop([this, conn, close_frame = std::move(close_frame)]() {
+                this->push_response(conn, std::move(close_frame), true);
+                this->flush_responses();
+            });
+        }
 
-                if (!conn->room_id_.empty()) {
-                    auto room = this->room_mgr_.get_or_create(
-                        conn->room_id_);
-
-                    room->del_num(conn);
-
-                    auto remaining = room->get_live_connections();
-                    if (remaining.empty()) {
-                        this->room_mgr_.remove_if_empty(conn->room_id_);
-                        conn->room_id_.clear();
-                    } else {
-                        std::string sys = WebSocketFrame::build(
-                            WebSocketOpcode::TEXT,
-                            WebSocketAppParser::build(
-                                "SYS", conn->nickname_ + " 离开房间"));
-
-                        std::string joined;
-                        for (size_t i = 0; i < remaining.size(); ++i) {
-                            if (i > 0) joined += ",";
-                            joined += remaining[i]->nickname_;
-                        }
-                        std::string members_frame = WebSocketFrame::build(
-                            WebSocketOpcode::TEXT,
-                            WebSocketAppParser::build("MEMBERS", joined));
-
-                        // 单 Reactor，直接收 fd 发
-                        std::vector<int> fds;
-                        for (auto& c : remaining) {
-                            fds.push_back(c->fd_);
-                        }
-
-                        this->loop_.run_in_loop(
-                            [this, fds, sys, members_frame]() {
-                            for (int target_fd : fds) {
-                                auto it = this->connections_.find(target_fd);
-                                if (it != this->connections_.end()) {
-                                    this->queue_resp_.emplace(
-                                        PendingResponse{it->second, sys});
-                                    this->queue_resp_.emplace(
-                                        PendingResponse{
-                                            it->second, members_frame});
-                                }
-                            }
-                            this->flush_responses();
-                        });
-
-                        this->room_mgr_.remove_if_empty(conn->room_id_);
-                        conn->room_id_.clear();
-                    }
+        // ---- 刷新 IO 操作 ----
+        if (!io_actions.empty()) {
+            this->loop_.run_in_loop([this, actions = std::move(io_actions)]() {
+                for (auto& action : actions) {
+                    action();
                 }
-
-                conn->pending_close_ = true;
-                std::string close_frame = WebSocketFrame::build(
-                    WebSocketOpcode::CLOSE, close_payload);
-                this->loop_.run_in_loop(
-                    [this, conn, close_frame = std::move(close_frame)]() {
-                    this->queue_resp_.emplace(
-                        PendingResponse{conn, std::move(close_frame)});
-                    this->flush_responses();
-                });
-            }
-        });
-    }
+                this->flush_responses();
+            });
+        }
+    });
 }
 
 // ======================================== 客户端数据总入口 ========================================
 
 void Reactor::handle_clientfd(const std::shared_ptr<Connection>& conn) {
+    // 啥也没读到，直接返回
     if (!this->read_data(conn) || conn->read_buf_.empty()) {
         return;
     }
-    if (!conn->ws_mode_) {
-        this->handle_http(conn);
-    } else {
-        this->handle_ws(conn);
+    // 根据连接协议选择不同的处理方式
+    else{
+        if (conn->ws_mode_) {
+            this->handle_ws(conn);
+        } 
+        else {
+            this->handle_http(conn);
+        }
     }
 }
 
 // ======================================== 断开连接 ========================================
 
-void Reactor::disconnect_connection(
-    const std::shared_ptr<Connection>& conn) {
-    this->file_mgr_.cancel_upload(conn->fd_);
+void Reactor::disconnect_connection(const std::shared_ptr<Connection>& conn) {
+    // 先断开连接，防止后续 IO action 误发
+    this->del_connection(conn);
 
-    if (!conn->room_id_.empty()) {
-        std::string room_id = conn->room_id_;
-        std::string nick = conn->nickname_;
-        this->works_.submit(
-            [this, conn, room_id = std::move(room_id),
-             nick = std::move(nick)]() {
-            auto room = this->room_mgr_.get_or_create(room_id);
+    std::string room_id = conn->room_id_;
+    std::string nick = conn->nickname_;
+    this->works_.submit([this, conn, room_id = std::move(room_id), nick = std::move(nick)]() {
+        // 1. 始终清理传输，room_id 为空时之前会漏掉
+        auto cancel_info = this->transfer_mgr_.cancel_by_fd(conn->fd_);
 
-            room->del_num(conn);
-
-            auto remaining = room->get_live_connections();
-            if (remaining.empty()) {
-                this->room_mgr_.remove_if_empty(room_id);
-                conn->room_id_.clear();
-                return;
+        // 2. 收集受影响的下载方通知
+        std::vector<std::pair<std::shared_ptr<Connection>, std::string>> dwerr_msgs;
+        for (auto& sc : cancel_info.cancelled_) {
+            std::string dwerr = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                WebSocketAppParser::build("DWERR", sc.file_id_, "上传方已离开，下载失败"));
+            if (auto oc = this->conn_registry_.get(sc.orphaned_downloader_fd_)) {
+                dwerr_msgs.push_back({std::move(oc), std::move(dwerr)});
             }
+        }
 
-            std::string sys = WebSocketFrame::build(
-                WebSocketOpcode::TEXT,
-                WebSocketAppParser::build(
-                    "SYS", nick + " 离开房间"));
+        // 3. 如果没加入房间，只发 DWERR 后返回
+        if (room_id.empty()) {
+            if (!dwerr_msgs.empty()) {
+                this->loop_.run_in_loop([this, dwerr = std::move(dwerr_msgs)]() {
+                    for (auto& [c, msg] : dwerr) {
+                        if (c->alive_) this->push_response(c, msg, true);
+                    }
+                    this->flush_responses();
+                });
+            }
+            return;
+        }
+
+        auto remaining = this->room_mgr_.leave_room(room_id, conn);
+        if (remaining.empty() && dwerr_msgs.empty()) return;
+
+        std::string sys, members_frame;
+        if (!remaining.empty()) {
+            sys = WebSocketFrame::build(WebSocketOpcode::TEXT,
+                WebSocketAppParser::build("SYS", nick + " 离开房间"));
 
             std::string joined;
             for (size_t i = 0; i < remaining.size(); ++i) {
                 if (i > 0) joined += ",";
                 joined += remaining[i]->nickname_;
             }
-            std::string members_frame = WebSocketFrame::build(
-                WebSocketOpcode::TEXT,
+            members_frame = WebSocketFrame::build(WebSocketOpcode::TEXT,
                 WebSocketAppParser::build("MEMBERS", joined));
+        }
 
-            // 单 Reactor，所有连接都在本地，直接按 fd 发
-            std::vector<int> fds;
-            for (auto& c : remaining) {
-                fds.push_back(c->fd_);
+        std::vector<std::shared_ptr<Connection>> room_targets;
+        for (auto& c : remaining) {
+            if (auto cc = this->conn_registry_.get(c->fd_)) {
+                room_targets.push_back(std::move(cc));
             }
+        }
 
-            this->loop_.run_in_loop(
-                [this, fds, sys, members_frame]() {
-                for (int target_fd : fds) {
-                    auto it = this->connections_.find(target_fd);
-                    if (it != this->connections_.end()) {
-                        this->queue_resp_.emplace(
-                            PendingResponse{it->second, sys});
-                        this->queue_resp_.emplace(
-                            PendingResponse{
-                                it->second, members_frame});
-                    }
+        // LEAVE 帧用于客户端精确匹配上传方离开，不依赖昵称
+        std::string leave_frame = WebSocketFrame::build(WebSocketOpcode::TEXT,
+            WebSocketAppParser::build("LEAVE",
+                std::to_string(conn->fd_), nick));
+
+        this->loop_.run_in_loop([this, dwerr_msgs = std::move(dwerr_msgs),
+                                 room_targets = std::move(room_targets),
+                                 leave_frame,
+                                 sys, members_frame]() {
+            for (auto& [c, msg] : dwerr_msgs) {
+                if (c->alive_) this->push_response(c, msg, true);
+            }
+            for (auto& c : room_targets) {
+                if (c->alive_) {
+                    this->push_response(c, leave_frame, true);
+                    this->push_response(c, sys, true);
+                    this->push_response(c, members_frame, true);
                 }
-                this->flush_responses();
-            });
-
-            this->room_mgr_.remove_if_empty(room_id);
-            conn->room_id_.clear();
+            }
+            this->flush_responses();
         });
-    }
-
-    this->del_connection(conn);
+    });
 }

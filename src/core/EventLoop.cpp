@@ -1,10 +1,11 @@
 // 事件循环的实现
 // EventLoop 是整个服务器最基础的 IO 调度单元
-// 每个 EventLoop 拥有一个 epoll 实例和一个 eventfd 用于跨线程唤醒
-// 主循环逻辑很简单：epoll_wait 等待事件、分发回调、执行跨线程任务
+// 每个 EventLoop 拥有一个 epoll 实例和一个 eventfd 用来唤醒阻塞的 IO 线程
+// 主循环逻辑很简单：epoll_wait 等事件、分发回调、处理线程池投回来的活
 #include "core/EventLoop.h"
 
 #include <cstdio>
+#include <thread>
 
 // 构造函数什么都不做
 // 真正的初始化工作由 init 函数完成
@@ -14,8 +15,12 @@ EventLoop::EventLoop() {}
 
 // 析构函数关闭 epoll 和 eventfd
 EventLoop::~EventLoop() {
-    if (this->epollfd_ >= 0) close(this->epollfd_);
-    if (this->eventfd_ >= 0) close(this->eventfd_);
+    if (this->epollfd_ >= 0) {
+        close(this->epollfd_);
+    }
+    if (this->eventfd_ >= 0) {
+        close(this->eventfd_);
+    }
 }
 
 // 初始化 EventLoop 的两个核心句柄
@@ -36,8 +41,7 @@ bool EventLoop::init() {
         this->epollfd_ = -1;
         return false;
     }
-    this->add_event(this->eventfd_, EPOLLIN,
-        [this]() { this->handle_eventfd(); });
+    this->add_event(this->eventfd_, EPOLLIN, [this]() { this->handle_eventfd();});
     return true;
 }
 
@@ -45,54 +49,51 @@ bool EventLoop::init() {
 // 这个函数会一直运行直到 quit_ 被设为 true
 //
 // 每轮循环的流程：
-//   1. 调用 epoll_wait 等待事件发生，超时时间设为 -1 表示无限等待
-//   2. 如果有事件发生，根据事件类型调用对应的回调
-//      EPOLLERR 调用错误回调并跳过这一轮
-//      EPOLLIN 调用读回调
-//      EPOLLOUT 调用写回调
-//   3. 执行跨线程投递的待办任务
-//   4. 进入下一轮循环
+//   1. epoll_wait 等事件
+//   2. 根据事件类型调对应的回调
+//      EPOLLERR 调错误回调然后跳过
+//      EPOLLIN 调读回调
+//      EPOLLOUT 回调：重新查表，防止读回调里删了 fd 导致悬空
+//   3. 进入下一轮循环
 //
-// 注意 EPOLLOUT 的处理：epoll_wait 返回后重新查找 event_map_，
-// 防止在读回调中该 fd 已经被删除导致悬空引用
+// 线程池投回来的回调在 handle_eventfd 里处理，不在循环底部做了
 void EventLoop::loop() {
-    this->loop_tid_ = std::this_thread::get_id();
     std::vector<epoll_event> evs(MAX_EVENTS);
 
     while (!this->quit_) {
         int n = epoll_wait(this->epollfd_, evs.data(), MAX_EVENTS, -1);
-
+        // epoll error 处理
         if (n < 0) {
-            if (errno == EINTR) continue;
-            perror("epoll_wait");
+            if (errno != EINTR){
+                perror("epoll_wait");
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
             continue;
         }
-
         for (int i = 0; i < n; ++i) {
             int fd = evs[i].data.fd;
 
             auto it = this->event_map_.find(fd);
             if (it == this->event_map_.end()) continue;
 
-            auto& evcb = it->second;
             uint32_t flags = evs[i].events;
 
+            // 快照回调，避免执行过程中 event_map_ 被修改迭代器失效导致指针越界
+            auto read_cb = it->second.read_cb_;
+            auto write_cb = it->second.write_cb_;
+            auto err_cb = it->second.err_cb_;
+
             if (flags & EPOLLERR) {
-                if (evcb.errCb_) evcb.errCb_();
+                if (err_cb) err_cb();
                 continue;
             }
-            if (flags & EPOLLIN && evcb.readCb_) {
-                evcb.readCb_();
+            if (flags & EPOLLIN && read_cb) {
+                read_cb();
             }
-            if (flags & EPOLLOUT) {
-                auto wit = this->event_map_.find(fd);
-                if (wit != this->event_map_.end() && wit->second.writeCb_) {
-                    wit->second.writeCb_();
-                }
+            if (flags & EPOLLOUT && write_cb) {
+                write_cb();
             }
         }
-
-        this->do_pending_functors();
     }
 }
 
@@ -141,68 +142,43 @@ bool EventLoop::has_event(int fd) const {
     return this->event_map_.find(fd) != this->event_map_.end();
 }
 
-// 跨线程投递回调的关键函数
-//
-// 如果调用方已经在本事件循环线程中，直接执行回调
-// 这样可以避免不必要的锁操作和 eventfd 唤醒
-//
-// 如果调用方是其他线程，把回调加入 pending_functors_ 队列，
-// 然后通过 write eventfd 唤醒 epoll_wait
-// 事件循环线程会在每轮循环末尾取出所有待办回调并执行
+// 线程池通过这个函数把活投回 IO 线程
 void EventLoop::run_in_loop(std::function<void()> cb) {
-    if (this->is_in_loop_thread()) {
-        cb();
-    } else {
-        {
-            std::lock_guard<std::mutex> lock(this->mtx_functors_);
-            this->pending_functors_.push_back(std::move(cb));
-        }
-        this->wakeup();
+    {
+        std::lock_guard<std::mutex> lock(this->mtx_functors_);
+        this->pending_functors_.push_back(std::move(cb));
     }
+    this->wakeup();
 }
 
 // 写入 eventfd 来唤醒 epoll_wait
-// eventfd 被注册在 epoll 的可读事件中，
-// 写入后 epoll_wait 会立刻返回
 void EventLoop::wakeup() {
     uint64_t x = 1;
-    if (write(this->eventfd_, &x, sizeof(x)) < 0 && errno != EAGAIN) {
+    if (write(this->eventfd_, &x, sizeof(x)) < 0) {
         perror("write eventfd");
     }
 }
 
-// 判断当前线程是否就是事件循环所在的线程
-bool EventLoop::is_in_loop_thread() const {
-    return this->loop_tid_ == std::this_thread::get_id();
-}
-
-// 返回 pending_functors_ 队列中待办回调的数量
-// 这个值用于 MainReactor 做负载感知分发
-// 数量越少说明这个 EventLoop 当前越空闲
-size_t EventLoop::pending_size() const {
-    return this->pending_functors_.size();
-}
-
-// 读取 eventfd 的数据
-// eventfd 被唤醒后如果不读取数据，epoll 会一直报告可读
-// 这里只是清空 eventfd 的状态，不做其他操作
+// 响应事件回调
 void EventLoop::handle_eventfd() {
+    // 先读取 eventfd 的数据
     uint64_t x;
     if (read(this->eventfd_, &x, sizeof(x)) < 0 && errno != EAGAIN) {
         perror("read eventfd");
     }
+    // 然后处理线程池回调
+    this->do_pending_functors();
 }
 
-// 执行所有跨线程投递的待办回调
-// 先加锁把 pending_functors_ 的数据交换到局部变量中，
-// 然后尽快释放锁，最后逐个执行回调
-// 这样可以减少锁的持有时间
+// 执行所有待办回调
 void EventLoop::do_pending_functors() {
     std::vector<std::function<void()>> functors;
     {
+        // 先加锁把 pending_functors_ 的数据交换到局部变量中，减少锁的持有时间
         std::lock_guard<std::mutex> lock(this->mtx_functors_);
         functors.swap(this->pending_functors_);
     }
+    // 完成所有剩余回调函数
     for (auto& f : functors) {
         f();
     }

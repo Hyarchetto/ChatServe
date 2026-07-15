@@ -1,4 +1,4 @@
-// HTTP 响应结构 — serialize() 生成线路数据
+// HTTP 响应结构，serialize() 生成线路数据
 #pragma once
 
 #include <string>

@@ -8,7 +8,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "../server/Connection.h"
+class Connection;
 
 class Room {
 public:
@@ -20,7 +20,7 @@ public:
     std::vector<std::shared_ptr<Connection>> get_live_connections();
 
 private:
-    std::vector<std::weak_ptr<Connection>> Connections_;
+    std::vector<std::weak_ptr<Connection>> connections_;
     std::mutex mtx_;
 };
 
@@ -29,12 +29,11 @@ class RoomManager {
 public:
     // 获取或创建房间
     std::shared_ptr<Room> get_or_create(const std::string& room_id);
-    // 房间为空时清理
-    void remove_if_empty(const std::string& room_id);
 
-    // 从房间移除连接，空房间自动清理
-    void leave_room(const std::string& room_id,
-                    const std::shared_ptr<Connection>& conn);
+    // 从房间移除连接，空房间自动清理，返回剩余成员列表
+    std::vector<std::shared_ptr<Connection>> leave_room(
+        const std::string& room_id,
+        const std::shared_ptr<Connection>& conn);
 
 private:
     std::unordered_map<std::string, std::shared_ptr<Room>> rooms_;

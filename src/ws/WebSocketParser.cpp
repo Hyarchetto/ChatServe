@@ -4,13 +4,7 @@
 #include <vector>
 
 #include "ws/WebSocketParser.h"
-
-// 掩码异或
-static void apply_mask(uint8_t* data, size_t len, const uint8_t mask[4]) {
-    for (size_t i = 0; i < len; ++i) {
-        data[i] ^= mask[i % 4];
-    }
-}
+#include "ws/WebSocketFrame.h"
 
 // ==================== 帧解析 ====================
 
@@ -57,13 +51,21 @@ WebSocketParseResult WebSocketParser::handle(const std::string& buffer,
             header_size += 4;
         }
 
+        // 限制单帧大小防止 payload_len 过大导致后续加法回绕
+        // 超限时跳过该帧并标记 CLOSE（推进 pos 避免下次解析又读到相同字节）
+        if (payload_len > 64 * 1024 * 1024) {
+            result.close_ = true;
+            pos += header_size + payload_len;
+            continue;
+        }
+
         // 检查数据是否完整
-        if (buffer.size() - pos < header_size + payload_len) break;
+        if (buffer.size() - pos < header_size + static_cast<size_t>(payload_len)) break;
 
         // 提取 payload
         std::string payload(buffer.data() + pos + header_size, payload_len);
         if (masked) {
-            apply_mask(reinterpret_cast<uint8_t*>(payload.data()),
+            WebSocketFrame::apply_mask(reinterpret_cast<uint8_t*>(payload.data()),
                        payload.size(), masking_key);
         }
 
@@ -79,9 +81,17 @@ WebSocketParseResult WebSocketParser::handle(const std::string& buffer,
             continue;
         }
         if (opcode == WebSocketOpcode::PONG) {
-            continue;  // 忽略 PONG（服务端不发 PING，不会收到 PONG）
+            continue;  // 忽略 PONG，服务端不发 PING，不会收到 PONG
         }
         if (opcode == WebSocketOpcode::CLOSE) {
+            result.close_ = true;
+            result.close_payload_ = payload;
+            continue;
+        }
+
+        // 保留 opcode，RFC 6455 要求关闭连接
+        if ((opcode_val >= 0x03 && opcode_val <= 0x07) ||
+            (opcode_val >= 0x0B && opcode_val <= 0x0F)) {
             result.close_ = true;
             result.close_payload_ = payload;
             continue;
@@ -101,7 +111,7 @@ WebSocketParseResult WebSocketParser::handle(const std::string& buffer,
                     frag->in_fragmented_ = false;
                 }
             }
-            // 非法 continuation（无起始帧），丢弃
+            // 非法 continuation，无起始帧，丢弃
         } else if (opcode == WebSocketOpcode::BINARY) {
             if (fin) {
                 // 完整 binary 消息

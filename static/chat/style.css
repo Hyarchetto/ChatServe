@@ -1,10 +1,14 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+html, body {
+    height: 100%;
+    overflow: hidden;
+}
+
 body {
     background: #1a1a2e;
     color: #eee;
     font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-    height: 100vh;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -82,6 +86,7 @@ body {
     padding: 12px 20px;
     background: #0f3460;
     border-bottom: 1px solid #1a4a7f;
+    flex-shrink: 0;
 }
 #header-left {
     display: flex;
@@ -130,11 +135,12 @@ body {
     color: white;
 }
 
-/* ========== 聊天主体（消息区 + 成员列表） ========== */
+/* ========== 聊天主体 ========== */
 #chat-body {
     flex: 1;
     display: flex;
     overflow: hidden;
+    min-height: 0;
 }
 
 #messages {
@@ -160,6 +166,7 @@ body {
     border-left: 1px solid #1a4a7f;
     padding: 14px;
     overflow-y: auto;
+    flex-shrink: 0;
 }
 #member-title {
     font-size: 13px;
@@ -249,6 +256,7 @@ body {
     background: #0f3460;
     border-top: 1px solid #1a4a7f;
     gap: 10px;
+    flex-shrink: 0;
 }
 #msg-input {
     flex: 1;
@@ -273,9 +281,6 @@ body {
     cursor: pointer;
     transition: opacity 0.2s;
     white-space: nowrap;
-}
-#send-btn:hover {
-    opacity: 0.9;
 }
 
 /* ========== 文件发送按钮 ========== */
@@ -303,6 +308,7 @@ body {
     border-top: 1px solid #1a4a7f;
     gap: 12px;
     font-size: 13px;
+    flex-shrink: 0;
 }
 .file-preview-info {
     display: flex;
@@ -329,6 +335,9 @@ body {
     gap: 8px;
     flex-shrink: 0;
 }
+.file-preview-actions.hidden {
+    display: none;
+}
 .file-preview-actions button {
     padding: 6px 14px;
     border-radius: 6px;
@@ -348,9 +357,6 @@ body {
 #file-send-btn {
     background: linear-gradient(135deg, #667eea, #764ba2);
     color: white;
-}
-#file-send-btn:hover {
-    opacity: 0.9;
 }
 
 /* ========== 上传进度条 ========== */
@@ -417,6 +423,12 @@ body {
     font-size: 11px;
     color: #666;
 }
+.file-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 .file-card-dl {
     padding: 6px 14px;
     background: linear-gradient(135deg, #667eea, #764ba2);
@@ -443,4 +455,139 @@ body {
     font-size: 11px;
     color: #666;
     white-space: nowrap;
+}
+
+/* ========== 移动端 ========== */
+@media (max-width: 768px) {
+    html, body {
+        height: 100%;
+    }
+    body {
+        align-items: stretch;
+        justify-content: stretch;
+    }
+
+    #app {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100dvh; /* JS 会用 visualViewport 覆盖这个值 */
+    }
+
+    #login {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding-top: 0;
+        min-height: 0;
+    }
+    #login h2 {
+        font-size: 28px;
+        margin-bottom: 20px;
+    }
+    .login-box {
+        width: 88vw;
+        padding: 24px 20px;
+    }
+    .login-box input {
+        padding: 10px 14px;
+        font-size: 16px;
+    }
+
+    #chat {
+        flex: 1;
+        display: none;
+        flex-direction: column;
+        min-height: 0;
+        width: auto;
+        height: auto;
+        max-height: none;
+        border-radius: 0;
+    }
+
+    #chat-header {
+        padding: 8px 10px;
+        flex-wrap: wrap;
+        gap: 4px;
+        flex-shrink: 0;
+    }
+    #room-name {
+        font-size: 15px;
+    }
+    #leave-btn {
+        padding: 4px 10px;
+        font-size: 12px;
+    }
+
+    #chat-body {
+        flex: 1;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    #member-list {
+        width: 100%;
+        max-height: 56px;
+        border-left: none;
+        border-top: 1px solid #1a4a7f;
+        padding: 4px 8px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 3px;
+        overflow-x: auto;
+        flex-shrink: 0;
+    }
+    #member-title {
+        display: none;
+    }
+    .member-item {
+        font-size: 11px;
+        padding: 2px 6px;
+        margin-bottom: 0;
+        white-space: nowrap;
+    }
+
+    #messages {
+        flex: 1;
+        padding: 6px 8px;
+        overflow-y: auto;
+        min-height: 0;
+    }
+    .msg {
+        max-width: 88%;
+    }
+    .msg-body {
+        font-size: 15px;
+        padding: 8px 12px;
+    }
+
+    #input-area {
+        padding: 6px 8px;
+        gap: 6px;
+        flex-shrink: 0;
+    }
+    #msg-input {
+        font-size: 16px;
+        padding: 8px 12px;
+    }
+    #send-btn {
+        padding: 8px 16px;
+    }
+
+    #file-preview {
+        flex-wrap: wrap;
+        padding: 6px 8px;
+        flex-shrink: 0;
+    }
+    .file-preview-info {
+        width: 100%;
+    }
+    .file-preview-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
 }

@@ -1,4 +1,4 @@
-// 迷你 SHA1 实现（RFC 3174），仅用于 WebSocket 握手
+// 迷你 SHA1 实现，RFC 3174，仅用于 WebSocket 握手
 // 无外部依赖
 #pragma once
 
@@ -58,16 +58,6 @@ public:
         SHA1 ctx;
         ctx.update(data, len);
         ctx.final(digest);
-    }
-
-    static std::string hash_to_string(const uint8_t digest[20]) {
-        static const char hex[] = "0123456789abcdef";
-        std::string s(40, '\0');
-        for (int i = 0; i < 20; ++i) {
-            s[i * 2]     = hex[digest[i] >> 4];
-            s[i * 2 + 1] = hex[digest[i] & 0x0F];
-        }
-        return s;
     }
 
 private:

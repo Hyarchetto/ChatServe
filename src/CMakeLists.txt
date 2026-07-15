@@ -12,7 +12,7 @@ add_library(chat_common STATIC
     core/ThreadPool.cpp
     core/EventLoop.cpp
     chatroom/Room.cpp
-    filetransfer/FileManager.cpp
+    transfer/TransferManager.cpp
     server/Reactor.cpp
 )
 

@@ -14,15 +14,15 @@ enum class HttpResultType {
     INCOMPLETE,    // 数据不完整，需要继续接收
     BAD_REQUEST,   // 格式错误
     WS_UPGRADE,    // WebSocket 升级请求
-    OK,            // 普通 HTTP 请求
+    OK             // 普通 HTTP 请求
 };
 
 // 解析结果
 struct HttpResult {
     HttpResultType type_ = HttpResultType::INCOMPLETE;
-    HttpRequest  request_;
-    std::string  error_msg_;           // BAD_REQUEST 时描述错误原因
-    size_t       finished_ = 0;        // 已消耗的字节数
+    HttpRequest    request_;
+    std::string    error_msg_;           // BAD_REQUEST 时描述错误原因
+    size_t         finished_ = 0;        // 已消耗的字节数
 };
 
 // HTTP 解析器
