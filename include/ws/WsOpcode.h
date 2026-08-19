@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-enum class WebSocketOpcode : uint8_t {
+enum class WsOpcode : uint8_t {
     CONTINUATION = 0x0,
     TEXT         = 0x1,
     BINARY       = 0x2,

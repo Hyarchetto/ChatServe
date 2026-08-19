@@ -1,0 +1,275 @@
+/* 全局重置 */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { height: 100%; overflow: hidden; }
+
+body {
+    background: #1a1a2e;
+    color: #eee;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* ========== 登录 ========== */
+#login { text-align: center; }
+#login h2 {
+    font-size: 40px; margin-bottom: 30px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.login-box {
+    background: #16213e; padding: 40px; border-radius: 12px; width: 360px;
+}
+.login-box p { font-size: 18px; margin-bottom: 20px; color: #aaa; }
+.login-box input {
+    display: block; width: 100%; padding: 12px 16px; margin-bottom: 14px;
+    background: #0f3460; border: 1px solid #2a4a7f; border-radius: 8px;
+    color: #eee; font-size: 15px; outline: none; transition: border 0.2s;
+}
+.login-box input:focus { border-color: #667eea; }
+.login-box button {
+    width: 100%; padding: 12px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    border: none; border-radius: 8px; color: white; font-size: 16px;
+    cursor: pointer; transition: opacity 0.2s;
+}
+.login-box button:hover { opacity: 0.9; }
+
+/* ========== 聊天界面 — 增大尺寸撑满页面 ========== */
+#chat {
+    width: 94vw; max-width: 1400px; height: 92vh; max-height: 960px;
+    background: #16213e; border-radius: 12px;
+    display: flex; flex-direction: column; overflow: hidden;
+}
+
+#chat-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 18px; background: #0f3460;
+    border-bottom: 1px solid #1a4a7f; flex-shrink: 0;
+}
+#header-left, #header-right { display: flex; align-items: center; gap: 12px; }
+#room-name { font-size: 18px; font-weight: bold; }
+#member-count { font-size: 13px; color: #88aadd; }
+
+/* ========== 连接状态 ========== */
+#conn-status { font-size: 13px; font-weight: bold; }
+.status-connected { color: #4caf50; }
+.status-reconnecting { color: #ff9800; }
+
+/* ========== 退出按钮 ========== */
+#leave-btn {
+    padding: 6px 14px; background: transparent; border: 1px solid #e74c3c;
+    border-radius: 6px; color: #e74c3c; font-size: 13px; cursor: pointer;
+    transition: all 0.2s;
+}
+#leave-btn:hover { background: #e74c3c; color: white; }
+
+/* ========== 聊天主体 — 水平拆分为 70%:30% ========== */
+#chat-body {
+    flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden;
+}
+
+/* ========== 左侧视频区域 70% ========== */
+#video-area {
+    flex: 7; display: flex; flex-direction: column;
+    min-width: 0; min-height: 0;
+    background: #0a0a1a; border-right: 1px solid #1a4a7f;
+}
+
+#video-grid-wrapper {
+    flex: 1; min-height: 0; display: flex;
+    justify-content: center; align-items: center;
+    overflow: hidden;
+}
+
+#video-grid {
+    width: 100%; height: 100%;
+    display: grid; gap: 2px; background: #111;
+    border-radius: 4px; overflow: hidden;
+}
+
+.video-cell {
+    position: relative; background: #1a1a2e;
+    overflow: hidden; display: flex; align-items: center; justify-content: center;
+}
+.video-cell video {
+    width: 100%; height: 100%; object-fit: cover; display: none;
+}
+.video-cell video.active { display: block; }
+
+.video-placeholder {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 6px; color: #555; user-select: none;
+}
+.video-placeholder-icon { font-size: 32px; }
+.video-placeholder-name { font-size: 13px; color: #888; }
+
+.video-label {
+    position: absolute; bottom: 4px; left: 4px; z-index: 1;
+    background: rgba(0,0,0,0.6); color: #ddd; font-size: 12px;
+    padding: 2px 8px; border-radius: 4px; pointer-events: none;
+    white-space: nowrap; max-width: calc(100% - 8px);
+    overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ========== 视频控制按钮 ========== */
+#video-controls {
+    display: flex; justify-content: center; gap: 8px;
+    padding: 6px 8px; background: #0f1a30; flex-shrink: 0; min-height: 52px; box-sizing: border-box;
+}
+#video-controls button {
+    padding: 6px 14px; border: 1px solid #2a4a7f; border-radius: 6px;
+    background: #162a4a; color: #ccd; font-size: 14px; cursor: pointer;
+    transition: all 0.2s; white-space: nowrap;
+}
+#video-controls button:hover { background: #1a4a7f; color: #fff; }
+#video-controls button.active { background: #4caf50; border-color: #4caf50; color: #fff; }
+
+/* ========== 右侧聊天面板 30% ========== */
+#chat-panel {
+    flex: 3; display: flex; flex-direction: column;
+    min-width: 0; min-height: 0;
+}
+
+#messages {
+    flex: 1; min-height: 0; overflow-y: auto;
+    padding: 10px 14px; display: flex;
+    flex-direction: column; gap: 6px;
+}
+#messages::-webkit-scrollbar { width: 6px; }
+#messages::-webkit-scrollbar-thumb { background: #2a4a7f; border-radius: 3px; }
+
+/* ========== 消息气泡 ========== */
+.msg { max-width: 85%; word-break: break-word; }
+.msg.self { align-self: flex-end; }
+.msg.other { align-self: flex-start; }
+.msg.sys {
+    align-self: center; background: transparent; color: #888;
+    font-size: 13px; text-align: center; max-width: 100%; padding: 4px 0;
+}
+.msg-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+.msg-name { font-size: 12px; font-weight: bold; color: #555; }
+.msg-time { font-size: 11px; color: #888; }
+.msg-body { padding: 8px 12px; border-radius: 10px; line-height: 1.5; font-size: 14px; color: #222; }
+.msg.self .msg-body { background: #d4edda; border-bottom-right-radius: 4px; }
+.msg.other .msg-body { background: #d1ecf1; border-bottom-left-radius: 4px; }
+
+/* ========== 输入区，右侧面板底部 ========== */
+#input-area {
+    display: flex; padding: 8px 10px; background: #0f3460;
+    border-top: 1px solid #1a4a7f; gap: 8px; flex-shrink: 0;
+}
+#msg-input {
+    flex: 1; min-width: 0; padding: 8px 12px; background: #1a1a2e;
+    border: 1px solid #2a4a7f; border-radius: 8px;
+    color: #eee; font-size: 14px; outline: none;
+}
+#msg-input:focus { border-color: #667eea; }
+#send-btn {
+    padding: 8px 18px; background: linear-gradient(135deg, #667eea, #764ba2);
+    border: none; border-radius: 8px; color: white; font-size: 14px;
+    cursor: pointer; transition: opacity 0.2s; white-space: nowrap; flex-shrink: 0;
+}
+#send-btn:hover { opacity: 0.9; }
+
+/* ========== 文件按钮，输入区左侧 ========== */
+#file-btn {
+    display: flex; align-items: center; padding: 6px;
+    cursor: pointer; color: #88aadd; border-radius: 8px;
+    transition: all 0.2s; flex-shrink: 0;
+}
+#file-btn:hover { background: #1a4a7f; color: #aaddff; }
+
+/* ========== 文件预览区，输入区上方 ========== */
+#file-preview {
+    display: flex; align-items: center; padding: 6px 12px;
+    background: #0a1a2e; border-top: 1px solid #1a4a7f;
+    gap: 10px; font-size: 13px; flex-shrink: 0;
+}
+.file-preview-info { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.file-icon { font-size: 18px; }
+#file-preview-name { color: #ddd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#file-preview-size { color: #888; white-space: nowrap; }
+.file-preview-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.file-preview-actions.hidden { display: none; }
+.file-preview-actions button {
+    padding: 5px 12px; border-radius: 6px; font-size: 13px;
+    cursor: pointer; border: none; transition: opacity 0.2s;
+}
+#file-cancel-btn { background: transparent; border: 1px solid #666 !important; color: #aaa; }
+#file-cancel-btn:hover { background: #333; }
+#file-send-btn { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
+
+/* ========== 文件消息卡片 ========== */
+.file-card {
+    background: #e8f4fd; border: 1px solid #b6d4fe; border-radius: 8px;
+    padding: 10px 14px; display: flex; align-items: center; gap: 10px; margin-top: 4px;
+    width: 280px; max-width: 100%; flex-wrap: wrap;
+}
+.msg.self .file-card { background: #d1e7dd; border-color: #a3cfaf; }
+.file-card-icon { font-size: 28px; flex-shrink: 0; }
+.file-card-info { flex: 1; min-width: 0; }
+.file-card-name { font-size: 13px; font-weight: bold; color: #222; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card-size { font-size: 11px; color: #666; }
+.file-card-actions { display: flex; align-items: center; gap: 6px; }
+.file-card-actions.stacked { flex: 1 1 100%; }
+.file-card-dl {
+    padding: 6px 14px; background: linear-gradient(135deg, #667eea, #764ba2);
+    border: none; border-radius: 6px; color: white; font-size: 12px;
+    cursor: pointer; transition: opacity 0.2s; white-space: nowrap; flex-shrink: 0;
+}
+.file-card-dl:hover { opacity: 0.9; }
+.file-card-dl:disabled { opacity: 0.5; cursor: not-allowed; }
+.file-card-dl.downloading { background: #ff9800; }
+.file-card-cancel {
+    padding: 6px 14px; background: linear-gradient(135deg, #e74c3c, #c0392b);
+    border: none; border-radius: 6px; color: white; font-size: 12px;
+    cursor: pointer; transition: opacity 0.2s; white-space: nowrap; flex-shrink: 0;
+}
+.file-card-cancel:hover { opacity: 0.9; }
+.file-card-cancel:disabled { opacity: 0.5; cursor: not-allowed; }
+.file-card-progress { font-size: 11px; color: #666; white-space: nowrap; }
+
+/* ========== 移动端 ========== */
+@media (max-width: 768px) {
+    #app { display: flex; flex-direction: column; width: 100%; height: 100dvh; }
+    #login { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    #login h2 { font-size: 28px; margin-bottom: 20px; }
+    .login-box { width: 88vw; padding: 24px 20px; }
+    .login-box input { padding: 10px 14px; font-size: 16px; }
+
+    #chat {
+        flex: 1; display: none; flex-direction: column;
+        width: 100%; height: auto; max-height: none; border-radius: 0;
+    }
+    #chat-header { padding: 6px 8px; flex-wrap: wrap; gap: 4px; flex-shrink: 0; }
+    #leave-btn { padding: 4px 10px; font-size: 12px; }
+    #chat-body { flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+
+    #video-area {
+        flex: none; height: 38vh; max-height: 280px;
+        border-right: none; border-bottom: 1px solid #1a4a7f;
+    }
+    #video-grid { border-radius: 2px; }
+    .video-placeholder-icon { font-size: 24px; }
+    .video-placeholder-name { font-size: 11px; }
+    .video-label { font-size: 10px; }
+    #video-controls { padding: 4px; gap: 4px; }
+    #video-controls button { font-size: 12px; padding: 4px 10px; }
+
+    #chat-panel { flex: 1; min-height: 0; }
+    #messages { flex: 1; padding: 6px 8px; overflow-y: auto; }
+    .msg { max-width: 88%; }
+    .msg-body { font-size: 15px; padding: 8px 12px; }
+
+    #input-area { padding: 6px 8px; gap: 6px; flex-shrink: 0; }
+    #msg-input { font-size: 16px; padding: 8px 12px; }
+    #send-btn { padding: 8px 16px; }
+
+    #file-preview { flex-wrap: wrap; padding: 6px 8px; flex-shrink: 0; }
+    .file-preview-info { width: 100%; }
+    .file-preview-actions { width: 100%; justify-content: flex-end; }
+}

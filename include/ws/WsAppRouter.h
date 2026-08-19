@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "WebSocketAppMessage.h"
+#include "WsAppMessage.h"
 
 class Connection;
 class RoomManager;
@@ -15,18 +15,18 @@ class RoomManager;
 class TransferManager;  // 前向声明
 
 // 待发送的定向消息，目标连接 + 已组帧数据
-struct WebSocketTargetedMessage {
+struct WsTargetedMessage {
     std::shared_ptr<Connection> target_;
     std::string data_;                      // 已封装为 WebSocket 帧的数据
 };
 
-class WebSocketRouter {
+class WsAppRouter {
 public:
-    WebSocketRouter();
+    WsAppRouter();
 
     // 处理器：接收解析后的消息、发起连接、房间管理器、传输管理器
-    using Handler = std::function<std::vector<WebSocketTargetedMessage>(
-        const WebSocketAppMessage& msg,
+    using Handler = std::function<std::vector<WsTargetedMessage>(
+        const WsAppMessage& msg,
         const std::shared_ptr<Connection>& conn,
         RoomManager& room_mgr,
         TransferManager& transfer_mgr)>;
@@ -38,11 +38,11 @@ public:
     void on_default(Handler handler);
 
     // 路由消息，结果写入 out；返回是否匹配到了处理器
-    bool route(const WebSocketAppMessage& msg,
+    bool route(const WsAppMessage& msg,
                const std::shared_ptr<Connection>& conn,
                RoomManager& room_mgr,
                TransferManager& transfer_mgr,
-               std::vector<WebSocketTargetedMessage>& out) const;
+               std::vector<WsTargetedMessage>& out) const;
 
 private:
     std::unordered_map<std::string, Handler> handlers_;

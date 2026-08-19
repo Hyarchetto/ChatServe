@@ -3,21 +3,17 @@
 
 #include <sstream>
 #include <iomanip>
-#include <cstdlib>
-#include <ctime>
 #include <cstring>
 #include <algorithm>
 
-TransferManager::TransferManager() {
-    std::srand(static_cast<unsigned>(std::time(nullptr)));
-}
+TransferManager::TransferManager() : rng_(std::random_device{}()) {}
 
 TransferManager::~TransferManager() {}
 
 std::string TransferManager::generate_file_id() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    int r = rand() % 10000;
+    int r = std::uniform_int_distribution<int>(0, 9999)(this->rng_);
     std::ostringstream oss;
     oss << "f_" << ts.tv_sec << ts.tv_nsec << "_" << std::setw(4) << std::setfill('0') << r;
     return oss.str();
@@ -26,9 +22,7 @@ std::string TransferManager::generate_file_id() {
 // ==================== 文件注册 ====================
 
 std::string TransferManager::register_file(const std::string& filename, size_t filesize,
-                                             const std::string& room_id,
-                                             const std::string& sender_nickname,
-                                             int uploader_fd) {
+                                             const std::string& room_id, int uploader_fd) {
     std::string file_id = this->generate_file_id();
     std::lock_guard<std::mutex> lock(this->mtx_);
 
@@ -37,7 +31,6 @@ std::string TransferManager::register_file(const std::string& filename, size_t f
     reg.filename_ = filename;
     reg.filesize_ = filesize;
     reg.room_id_ = room_id;
-    reg.sender_nickname_ = sender_nickname;
     reg.uploader_fd_ = uploader_fd;
 
     this->registrations_[file_id] = std::move(reg);
@@ -68,46 +61,18 @@ void TransferManager::unregister_file(const std::string& file_id) {
     this->unregister_file_impl(file_id);
 }
 
-void TransferManager::unregister_by_uploader(int uploader_fd) {
-    std::lock_guard<std::mutex> lock(this->mtx_);
-    // 清理文件注册
-    if (auto it = this->uploader_files_.find(uploader_fd); it != this->uploader_files_.end()) {
-        auto file_ids = it->second;  // 拷贝，循环后 it 可能因 unregister_file_impl 失效
-        for (const auto& file_id : file_ids) {
-            this->unregister_file_impl(file_id);
-        }
-    }
-    // 清理该上传方所有活跃传输会话
-    if (auto u_it = this->uploader_sessions_.find(uploader_fd); u_it != this->uploader_sessions_.end()) {
-        auto session_ids = u_it->second;  // 拷贝
-        for (uint64_t sid : session_ids) {
-            auto s_it = this->sessions_.find(sid);
-            if (s_it != this->sessions_.end()) {
-                int dfd = s_it->second.downloader_fd_;
-                auto d_it = this->downloader_sessions_.find(dfd);
-                if (d_it != this->downloader_sessions_.end()) {
-                    auto& vec = d_it->second;
-                    vec.erase(std::remove(vec.begin(), vec.end(), sid), vec.end());
-                    if (vec.empty()) this->downloader_sessions_.erase(d_it);
-                }
-                this->sessions_.erase(s_it);
-            }
-        }
-        this->uploader_sessions_.erase(u_it);
-    }
-}
-
 // ==================== 启动传输 ====================
 
-std::vector<InitialRequest> TransferManager::start_transfer(
-    const std::string& file_id, int downloader_fd, uint64_t& out_session_id) {
+std::vector<NextRequest> TransferManager::start_transfer(
+    const std::string& file_id, int downloader_fd,
+    size_t start_offset, uint64_t& out_session_id) {
     std::lock_guard<std::mutex> lock(this->mtx_);
-    std::vector<InitialRequest> requests;
+    std::vector<NextRequest> requests;
 
     out_session_id = 0;
 
     // 检查文件是否存在
-    if (auto r_it = this->registrations_.find(file_id); 
+    if (auto r_it = this->registrations_.find(file_id);
              r_it != this->registrations_.end() && r_it->second.uploader_fd_ >= 0) {
 
         int uploader_fd = r_it->second.uploader_fd_;
@@ -123,19 +88,20 @@ std::vector<InitialRequest> TransferManager::start_transfer(
         session.uploader_fd_ = uploader_fd;
         session.downloader_fd_ = downloader_fd;
         session.filesize_ = filesize;
+        session.next_req_offset_ = start_offset;   // 断点续传从该偏移起请求
+        session.total_received_ = start_offset;    // 断点前的字节计入完成判定
 
-        // 初始窗口
+        // 初始窗口，逐次生成与滑动补发相同的 NextRequest
         size_t total_chunks = (filesize + session.CHUNK_SIZE - 1) / session.CHUNK_SIZE;
         size_t init_count = std::min(session.WINDOW_SIZE, total_chunks);
 
         for (size_t i = 0; i < init_count; ++i) {
-            size_t offset = session.next_req_offset_;
-            size_t size = session.chunk_size_for_offset(offset);
-            requests.push_back({session_id, file_id, offset, size, uploader_fd});
-            session.next_req_offset_ += size;
-        }
-        if (session.next_req_offset_ >= filesize) {
-            session.all_requested_ = true;
+            if (auto req = this->try_send_next_request(session)) {
+                requests.push_back(std::move(*req));
+            } 
+            else {
+                break;
+            }
         }
 
         this->sessions_[session_id] = std::move(session);
@@ -146,7 +112,6 @@ std::vector<InitialRequest> TransferManager::start_transfer(
 }
 
 // ==================== 二进制分块处理 ====================
-
 ChunkResult TransferManager::handle_chunk_data(const std::string& data) {
     std::lock_guard<std::mutex> lock(this->mtx_);
     ChunkResult result;
@@ -164,15 +129,21 @@ ChunkResult TransferManager::handle_chunk_data(const std::string& data) {
 
     // 查找会话
     auto s_it = this->sessions_.find(session_id);
-    if (s_it == this->sessions_.end()) return result;
-    TransferSession& ts = s_it->second;
+    if (s_it == this->sessions_.end()) {
+        return result;
+    }
 
+    TransferSession& ts = s_it->second;
     size_t off = static_cast<size_t>(offset);
-    if (data_size != ts.chunk_size_for_offset(off)) return result;
+    // 偏移越界直接拒绝，否则 chunk_size_for_offset 中 filesize_ - off 无符号下溢
+    if (off >= ts.filesize_ || data_size != ts.chunk_size_for_offset(off)) {
+        return result;
+    }
 
     // 去重
-    if (ts.pending_data_.count(off)) return result;
-
+    if (ts.pending_data_.count(off)) {
+        return result;
+    }
     std::string chunk_data(data.data() + BINARY_HEADER_SIZE, data_size);
     ts.pending_data_[off] = chunk_data;
     ts.pending_acks_.insert(off);
@@ -187,52 +158,40 @@ ChunkResult TransferManager::handle_chunk_data(const std::string& data) {
     result.data_ = std::move(chunk_data);
 
     // 窗口有空位且还有数据未请求时发送下一个 DWREQ
-    if (ts.has_window_space() && !ts.all_requested_) {
-        size_t req_offset = ts.next_req_offset_;
-        size_t req_size = ts.chunk_size_for_offset(req_offset);
-        result.has_next_req_ = true;
-        result.next_req_session_id_ = session_id;
-        result.next_req_offset_ = req_offset;
-        result.next_req_size_ = req_size;
-        result.next_req_uploader_fd_ = ts.uploader_fd_;
-        ts.next_req_offset_ += req_size;
-        if (ts.next_req_offset_ >= ts.filesize_) {
-            ts.all_requested_ = true;
-        }
-    }
+    result.next_ = this->try_send_next_request(ts);
 
     return result;
 }
 
 // ==================== 分块转发包装 ====================
 
-std::string TransferManager::wrap_chunk_data(uint64_t session_id, size_t offset,
-                                               const std::string& chunk) {
+std::string TransferManager::make_chunk_header(uint64_t session_id, size_t offset,
+                                               size_t size) {
     std::string header(BINARY_HEADER_SIZE, '\0');
     std::memcpy(&header[0], &session_id, 8);
     uint64_t off = offset;
     std::memcpy(&header[8], &off, 8);
-    uint32_t sz = static_cast<uint32_t>(chunk.size());
+    uint32_t sz = static_cast<uint32_t>(size);
     std::memcpy(&header[16], &sz, 4);
-    return header + chunk;
+    return header;
 }
 
 // ==================== ACK 处理 ====================
-
-void TransferManager::try_send_next_request(TransferSession& ts, AckResult& result) {
-    if (ts.has_window_space() && !ts.all_requested_) {
-        size_t req_offset = ts.next_req_offset_;
-        size_t req_size = ts.chunk_size_for_offset(req_offset);
-        result.has_next_req_ = true;
-        result.next_req_session_id_ = ts.session_id_;
-        result.next_req_offset_ = req_offset;
-        result.next_req_size_ = req_size;
-        result.next_req_uploader_fd_ = ts.uploader_fd_;
-        ts.next_req_offset_ += req_size;
-        if (ts.next_req_offset_ >= ts.filesize_) {
-            ts.all_requested_ = true;
-        }
+std::optional<NextRequest> TransferManager::try_send_next_request(TransferSession& ts) {
+    // next_req_offset_ 越过文件末尾即所有块已请求
+    if (ts.next_req_offset_ >= ts.filesize_ || !ts.has_window_space()) {
+        return std::nullopt;
     }
+    size_t req_offset = ts.next_req_offset_;
+    size_t req_size = ts.chunk_size_for_offset(req_offset);
+    NextRequest next;
+    next.session_id_ = ts.session_id_;
+    next.file_id_ = ts.file_id_;
+    next.offset_ = req_offset;
+    next.size_ = req_size;
+    next.uploader_fd_ = ts.uploader_fd_;
+    ts.next_req_offset_ += req_size;
+    return next;
 }
 
 AckResult TransferManager::handle_ack(uint64_t session_id, size_t offset) {
@@ -264,7 +223,7 @@ AckResult TransferManager::handle_ack(uint64_t session_id, size_t offset) {
     }
 
     // 窗口有空位时发送下一个 DWREQ
-    try_send_next_request(ts, result);
+    result.next_ = this->try_send_next_request(ts);
 
     return result;
 }
@@ -278,30 +237,78 @@ void TransferManager::cleanup_session_impl(uint64_t session_id) {
     int uploader_fd = s_it->second.uploader_fd_;
     int downloader_fd = s_it->second.downloader_fd_;
 
-    // 清理 uploader 索引
-    auto u_it = this->uploader_sessions_.find(uploader_fd);
-    if (u_it != this->uploader_sessions_.end()) {
-        auto& vec = u_it->second;
-        vec.erase(std::remove(vec.begin(), vec.end(), session_id), vec.end());
-        if (vec.empty()) {
-            this->uploader_sessions_.erase(u_it);
-        }
-    }
-
-    // 清理 downloader 索引
-    auto d_it = this->downloader_sessions_.find(downloader_fd);
-    if (d_it != this->downloader_sessions_.end()) {
-        auto& vec = d_it->second;
-        vec.erase(std::remove(vec.begin(), vec.end(), session_id), vec.end());
-        if (vec.empty()) {
-            this->downloader_sessions_.erase(d_it);
-        }
-    }
+    // 清理 uploader 和 downloader 索引
+    this->remove_session_ref(this->uploader_sessions_, uploader_fd, session_id);
+    this->remove_session_ref(this->downloader_sessions_, downloader_fd, session_id);
 
     this->sessions_.erase(s_it);
 }
 
+// 从 fds 索引中移除会话 id，空则删该条
+void TransferManager::remove_session_ref(
+    std::unordered_map<int, std::vector<uint64_t>>& map,
+    int fd, uint64_t session_id) {
+    auto it = map.find(fd);
+    if (it == map.end()) return;
+    auto& vec = it->second;
+    vec.erase(std::remove(vec.begin(), vec.end(), session_id), vec.end());
+    if (vec.empty()) map.erase(it);
+}
+
 // ==================== 取消传输 ====================
+
+// 清理单个会话，可选记录被孤立的下载方
+void TransferManager::cancel_session_impl(uint64_t session_id, CancelResult* result) {
+    auto s_it = this->sessions_.find(session_id);
+    if (s_it == this->sessions_.end()) return;
+
+    if (result != nullptr) {
+        CancelResult::SessionCancel sc;
+        sc.file_id_ = s_it->second.file_id_;
+        sc.orphaned_downloader_fd_ = s_it->second.downloader_fd_;
+        result->cancelled_.push_back(std::move(sc));
+    }
+    this->cleanup_session_impl(session_id);
+}
+
+// 锁内按 file_id + downloader_fd 找最新会话 id，找不到返回 nullopt
+std::optional<uint64_t> TransferManager::find_session_id(const std::string& file_id, int downloader_fd) const {
+    std::optional<uint64_t> found;
+    for (const auto& entry : this->sessions_) {
+        const TransferSession& ts = entry.second;
+        if (ts.file_id_ == file_id && ts.downloader_fd_ == downloader_fd) {
+            if (!found || entry.first > *found) {
+                found = entry.first;
+            }
+        }
+    }
+    return found;
+}
+
+// 按文件取消单个文件，返回被孤立的下载方
+CancelResult TransferManager::cancel_file(const std::string& file_id) {
+    std::lock_guard<std::mutex> lock(this->mtx_);
+    CancelResult result;
+
+    auto r_it = this->registrations_.find(file_id);
+    if (r_it == this->registrations_.end()) return result;
+    int uploader_fd = r_it->second.uploader_fd_;
+
+    // 取消该文件的所有活跃下载会话
+    auto u_it = this->uploader_sessions_.find(uploader_fd);
+    if (u_it != this->uploader_sessions_.end()) {
+        auto session_ids = u_it->second;  // 拷贝，循环后 u_it 可能失效
+        for (uint64_t sid : session_ids) {
+            auto s_it = this->sessions_.find(sid);
+            if (s_it != this->sessions_.end() && s_it->second.file_id_ == file_id) {
+                this->cancel_session_impl(sid, &result);
+            }
+        }
+    }
+
+    this->unregister_file_impl(file_id);
+    return result;
+}
 
 CancelResult TransferManager::cancel_by_fd(int fd) {
     std::lock_guard<std::mutex> lock(this->mtx_);
@@ -309,7 +316,6 @@ CancelResult TransferManager::cancel_by_fd(int fd) {
 
     // 第一阶段：作为上传方取消，记录受影响下载方
     {
-        // 清理文件注册
         auto r_it = this->uploader_files_.find(fd);
         if (r_it != this->uploader_files_.end()) {
             auto file_ids = r_it->second;  // 拷贝，循环后 r_it 可能因 unregister_file_impl 失效
@@ -318,34 +324,14 @@ CancelResult TransferManager::cancel_by_fd(int fd) {
             }
         }
 
-        // 清理活跃传输会话
         auto u_it = this->uploader_sessions_.find(fd);
         if (u_it != this->uploader_sessions_.end()) {
-            auto session_ids = u_it->second;  // 拷贝
+            auto session_ids = u_it->second;  // 拷贝，循环后 u_it 可能失效
             for (uint64_t sid : session_ids) {
-                auto s_it = this->sessions_.find(sid);
-                if (s_it != this->sessions_.end()) {
-                    CancelResult::SessionCancel sc;
-                    sc.file_id_ = s_it->second.file_id_;
-                    sc.orphaned_downloader_fd_ = s_it->second.downloader_fd_;
-                    result.cancelled_.push_back(std::move(sc));
-
-                    // 清理 downloader 索引
-                    int dfd = s_it->second.downloader_fd_;
-                    auto d_it = this->downloader_sessions_.find(dfd);
-                    if (d_it != this->downloader_sessions_.end()) {
-                        auto& vec = d_it->second;
-                        vec.erase(std::remove(vec.begin(), vec.end(), sid), vec.end());
-                        if (vec.empty()) {
-                            this->downloader_sessions_.erase(d_it);
-                        }
-                    }
-
-                    this->sessions_.erase(s_it);
-                }
+                this->cancel_session_impl(sid, &result);
             }
-            this->uploader_sessions_.erase(u_it);
         }
+        this->uploader_sessions_.erase(fd);  // 按 key，会话清理可能已删掉该条
     }
 
     // 第二阶段：作为下载方取消
@@ -354,25 +340,20 @@ CancelResult TransferManager::cancel_by_fd(int fd) {
         if (d_it != this->downloader_sessions_.end()) {
             auto session_ids = d_it->second;  // 拷贝
             for (uint64_t sid : session_ids) {
-                auto s_it = this->sessions_.find(sid);
-                if (s_it != this->sessions_.end()) {
-                    int ufd = s_it->second.uploader_fd_;
-
-                    auto u_it = this->uploader_sessions_.find(ufd);
-                    if (u_it != this->uploader_sessions_.end()) {
-                        auto& vec = u_it->second;
-                        vec.erase(std::remove(vec.begin(), vec.end(), sid), vec.end());
-                        if (vec.empty()) {
-                            this->uploader_sessions_.erase(u_it);
-                        }
-                    }
-
-                    this->sessions_.erase(s_it);
-                }
+                this->cancel_session_impl(sid, nullptr);
             }
-            this->downloader_sessions_.erase(d_it);
         }
+        this->downloader_sessions_.erase(fd);  // 按 key，会话清理可能已删掉该条
     }
 
     return result;
+}
+
+// ==================== 下载方会话控制 ====================
+bool TransferManager::cancel_session(const std::string& file_id, int downloader_fd) {
+    std::lock_guard<std::mutex> lock(this->mtx_);
+    auto sid = this->find_session_id(file_id, downloader_fd);
+    if (!sid) return false;
+    this->cancel_session_impl(*sid, nullptr);
+    return true;
 }

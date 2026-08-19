@@ -5,11 +5,12 @@
 #include <string>
 #include <functional>
 #include <atomic>
+#include <mutex>
 
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "../ws/WebSocketFragmentState.h"
+#include "../ws/WsFragmentState.h"
 
 class Connection {
 public:
@@ -20,12 +21,22 @@ public:
 
     // ---- WebSocket 状态 ----
     bool ws_mode_ = false;                      // 是否已升级为 WebSocket
-    WebSocketFragmentState ws_frag_;            // WebSocket 分片状态
+    WsFragmentState ws_frag_;            // WebSocket 分片状态
 
-    // ---- 聊天室状态 ----
-    std::string room_id_;
-    std::string nickname_;
-
+    // ---- 聊天室状态 线程安全内部 API ----
+    void set_identity(const std::string& room, const std::string& nick) {
+        std::lock_guard<std::mutex> lock(identity_mtx_);
+        room_id_ = room;
+        nickname_ = nick;
+    }
+    std::string get_room_id() const {
+        std::lock_guard<std::mutex> lock(identity_mtx_);
+        return room_id_;
+    }
+    std::string get_nickname() const {
+        std::lock_guard<std::mutex> lock(identity_mtx_);
+        return nickname_;
+    }
 
     explicit Connection(int fd): fd_(fd){
         set_nonblock();
@@ -40,4 +51,9 @@ private:
         int flags = fcntl(this->fd_, F_GETFL, 0);
         fcntl(this->fd_, F_SETFL, flags | O_NONBLOCK);
     }
+
+    // ---- 跨线程身份数据 线程池 Worker + IO 线程并发读写 ----
+    mutable std::mutex identity_mtx_;
+    std::string room_id_;
+    std::string nickname_;
 };

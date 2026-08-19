@@ -2,6 +2,22 @@
 // 从 TCP buffer 中解析出 HTTP 请求
 #include "http/HttpParser.h"
 
+#include <cctype>
+#include <algorithm>
+
+static bool ieq(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(),
+        [](char ca, char cb) { return std::tolower(ca) == std::tolower(cb); });
+}
+
+static bool icontains(const std::string& haystack, const std::string& needle) {
+    if (needle.size() > haystack.size()) return false;
+    auto it = std::search(haystack.begin(), haystack.end(),
+                          needle.begin(), needle.end(),
+                          [](char ca, char cb) { return std::tolower(ca) == std::tolower(cb); });
+    return it != haystack.end();
+}
+
 bool HttpParser::read_line(const std::string& buf, size_t& pos, std::string& line) {
     auto n = buf.find("\r\n", pos);
     if (n == std::string::npos) return false;
@@ -85,7 +101,7 @@ HttpResult HttpParser::handle(const std::string& buf) {
     {
         auto upgrade = result.request_.header("Upgrade");
         auto connection_hdr = result.request_.header("Connection");
-        if (upgrade == "websocket" && connection_hdr.find("Upgrade") != std::string::npos) {
+        if (ieq(upgrade, "websocket") && icontains(connection_hdr, "Upgrade")) {
             result.type_ = HttpResultType::WS_UPGRADE;
         } 
         else {

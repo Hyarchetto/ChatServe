@@ -55,8 +55,7 @@ std::future<typename std::invoke_result_t<F, Args...>> ThreadPool::submit(F&& f,
     using return_type = typename std::invoke_result_t<F, Args...>;
 
     auto task = std::make_shared<std::packaged_task<return_type()>>(
-        [f = std::forward<F>(f), args = std::make_tuple(std::forward<Args>(args)...)]() mutable
-            -> return_type {
+        [f = std::forward<F>(f), args = std::make_tuple(std::forward<Args>(args)...)]() mutable -> return_type {
             return std::apply(std::move(f), std::move(args));
         }
     );
@@ -67,9 +66,11 @@ std::future<typename std::invoke_result_t<F, Args...>> ThreadPool::submit(F&& f,
         if (this->stop_.load(std::memory_order_acquire)) {
             throw std::runtime_error("线程池已失效");
         }
+
         if (this->tasks_.size() < this->max_task_num_) {
             this->tasks_.emplace([task = std::move(task)]() mutable { (*task)(); });
-        } else {
+        } 
+        else {
             throw std::runtime_error("任务队列已满");
         }
     }

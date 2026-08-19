@@ -1,15 +1,11 @@
 // 事件循环的实现
-// EventLoop 是整个服务器最基础的 IO 调度单元
-// 每个 EventLoop 拥有一个 epoll 实例和一个 eventfd 用来唤醒阻塞的 IO 线程
-// 主循环逻辑很简单：epoll_wait 等事件、分发回调、处理线程池投回来的活
+// 把 EventLoop 作为成员变量嵌入Reactor
 #include "core/EventLoop.h"
 
 #include <cstdio>
 #include <thread>
 
-// 构造函数什么都不做
-// 真正的初始化工作由 init 函数完成
-// 这样设计的好处是允许把 EventLoop 作为成员变量嵌入其他类，
+// 构造函数什么都不做，真正的初始化工作由 init 函数完成
 // 在容器初始化完毕后再调用 init
 EventLoop::EventLoop() {}
 
@@ -24,10 +20,6 @@ EventLoop::~EventLoop() {
 }
 
 // 初始化 EventLoop 的两个核心句柄
-// 第一步创建 epoll 实例
-// 第二步创建 eventfd 并设为非阻塞模式
-// 第三步把 eventfd 注册到 epoll 中等待可读事件
-// 返回 true 表示初始化成功
 bool EventLoop::init() {
     this->epollfd_ = epoll_create(1);
     if (this->epollfd_ < 0) {
@@ -46,17 +38,6 @@ bool EventLoop::init() {
 }
 
 // 事件循环主函数
-// 这个函数会一直运行直到 quit_ 被设为 true
-//
-// 每轮循环的流程：
-//   1. epoll_wait 等事件
-//   2. 根据事件类型调对应的回调
-//      EPOLLERR 调错误回调然后跳过
-//      EPOLLIN 调读回调
-//      EPOLLOUT 回调：重新查表，防止读回调里删了 fd 导致悬空
-//   3. 进入下一轮循环
-//
-// 线程池投回来的回调在 handle_eventfd 里处理，不在循环底部做了
 void EventLoop::loop() {
     std::vector<epoll_event> evs(MAX_EVENTS);
 
@@ -104,9 +85,7 @@ void EventLoop::quit() {
     this->wakeup();
 }
 
-// 把一个 fd 及其回调注册到 epoll 中
-// events 是 epoll 事件标志，通常是 EPOLLIN 或 EPOLLOUT 的组合
-// 如果是边缘触发模式，需要加上 EPOLLET
+// 把一个句柄及其回调注册到 epoll 中
 void EventLoop::add_event(int fd, uint32_t events,
                           std::function<void()> read_cb,
                           std::function<void()> write_cb,
@@ -121,15 +100,13 @@ void EventLoop::add_event(int fd, uint32_t events,
     epoll_ctl(this->epollfd_, EPOLL_CTL_ADD, fd, &ev);
 }
 
-// 从 epoll 中删除一个 fd 的监听
-// 同时从 event_map_ 中删除对应的回调
+// 删除一个句柄的监听
 void EventLoop::del_event(int fd) {
     this->event_map_.erase(fd);
     epoll_ctl(this->epollfd_, EPOLL_CTL_DEL, fd, NULL);
 }
 
-// 修改一个 fd 在 epoll 中的监听事件类型
-// 例如从监听 EPOLLIN 改为同时监听 EPOLLIN 和 EPOLLOUT
+// 修改一个句柄在 epoll 中的监听事件
 void EventLoop::mod_event(int fd, uint32_t events) {
     epoll_event ev{};
     ev.data.fd = fd;

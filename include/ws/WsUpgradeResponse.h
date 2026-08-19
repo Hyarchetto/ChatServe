@@ -6,9 +6,9 @@
 #include "../http/HttpResponse.h"
 
 // WebSocket 升级响应构造器
-class WebSocketUpgradeResponse {
+class WsUpgradeResponse {
 public:
-    WebSocketUpgradeResponse() = delete;
+    WsUpgradeResponse() = delete;
 
     // 根据 Upgrade 请求构建 101 响应，key 缺失则返回 400
     static HttpResponse build(const HttpRequest& req);

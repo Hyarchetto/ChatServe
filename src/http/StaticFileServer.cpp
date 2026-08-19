@@ -39,6 +39,7 @@ HttpResponse StaticFileServer::serve(const std::string& file_path) {
     resp.status_ = 200;
     resp.status_text_ = "OK";
     resp.headers_["Content-Type"] = mime_type(file_path);
+    resp.headers_["Cache-Control"] = "no-cache";
     resp.body_ = std::move(buffer);
 
     return resp;

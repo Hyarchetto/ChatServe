@@ -28,3 +28,6 @@ __pycache__/
 # Logs
 *.log
 valgrind.out
+
+# Secrets
+scripts/key.pem

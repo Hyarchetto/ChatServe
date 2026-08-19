@@ -8,9 +8,9 @@
 #include "./HttpRequest.h"
 #include "./HttpResponse.h"
 
-class Router {
+class HttpRouter {
 public:
-    Router();
+    HttpRouter();
     HttpResponse handle(const HttpRequest& req) const;
 
 private:

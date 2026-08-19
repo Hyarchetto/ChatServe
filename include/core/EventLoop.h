@@ -4,8 +4,8 @@
 // 线程池干完活了就用 run_in_loop 把结果塞回 IO 线程
 #pragma once
 
+#include <atomic>
 #include <functional>
-#include <memory>
 #include <unordered_map>
 #include <vector>
 #include <mutex>
@@ -14,8 +14,6 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
-#include <cstring>
-#include <cerrno>
 
 class EventLoop {
 public:
@@ -33,7 +31,7 @@ public:
     // 本函数不会返回，直到 quit 被调用
     void loop();
 
-    // 设置退出标志，然后唤醒 epoll_wait 让它尽快返回并退出
+    // 设置退出标志并唤醒 epoll_wait 可在线程池或信号处理器中调用
     void quit();
 
     // ==================== epoll 事件注册 ====================
@@ -88,7 +86,7 @@ private:
     // 线程池投回来的待办回调队列，handle_eventfd 里会取出来执行
     std::vector<std::function<void()>> pending_functors_;
 
-    bool quit_ = false;          // 退出标志，loop 函数每轮都会检查
+    std::atomic<bool> quit_ = false;   // 退出标志，loop 函数每轮都会检查
 
     // 读取 eventfd 中的数据，清空唤醒标记
     void handle_eventfd();
