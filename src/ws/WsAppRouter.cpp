@@ -21,7 +21,9 @@ static void broadcast_except(
     const std::vector<std::shared_ptr<Connection>>& live, int except_fd,
     std::vector<WsTargetedMessage>& results, const std::string& frame) {
     for (auto& c : live) {
-        if (c->fd_ != except_fd) results.push_back({c, frame});
+        if (c->fd_ != except_fd) {
+            results.push_back({c, frame});
+        }
     }
 }
 
@@ -88,14 +90,16 @@ WsAppRouter::WsAppRouter() {
     auto broadcast_chat = [](const std::string& content,
                              const std::shared_ptr<Connection>& conn,
                              RoomManager& room_mgr) -> std::vector<WsTargetedMessage> {
+        // 获取连接的房间号
         std::vector<WsTargetedMessage> results;
         if (conn->get_room_id().empty()) return results;
-
+        // 获取房间
         auto room = room_mgr.get_or_create(conn->get_room_id());
+        // 构建文本帧
         std::string wire = WsFrame::build(WsOpcode::TEXT,
             WsAppParser::build("MSG",
                 std::to_string(conn->fd_), conn->get_nickname(), content));
-
+        
         broadcast_except(room->get_live_connections(), conn->fd_, results, wire);
         return results;
     };
@@ -125,7 +129,14 @@ WsAppRouter::WsAppRouter() {
 
         std::string filename = msg.param(0);
         size_t filesize = 0;
-        try { filesize = std::stoul(msg.param(1)); } catch (...) { return results; }
+        try { 
+            filesize = std::stoul(msg.param(1)); 
+        } 
+        catch (const std::exception& e) {
+            std::cerr << "UPLOAD filesize parse failed: " << e.what() 
+                    << " for param '" << msg.param(1) << "'" << std::endl;
+            return results;
+        }
 
         std::string file_id = transfer_mgr.register_file(
             filename, filesize, conn->get_room_id(), conn->fd_);
@@ -203,7 +214,12 @@ WsAppRouter::WsAppRouter() {
         if (msg.param_count() >= 2) {
             try {
                 start_offset = std::stoull(msg.param(1));
-            } catch (...) {}
+            } 
+            catch (const std::exception& e) {
+                std::cerr << "DOWNLOAD start_offset parse failed, fallback to 0: " 
+                        << e.what() << " for param '" << msg.param(1) << "'" << std::endl;
+                // start_offset 保持为 0
+            }
         }
 
         // 启动传输，获取初始窗口请求
@@ -311,7 +327,9 @@ WsAppRouter::WsAppRouter() {
                              RoomManager& /*room_mgr*/,
                              TransferManager& transfer_mgr) -> std::vector<WsTargetedMessage> {
         std::vector<WsTargetedMessage> results;
-        if (msg.param_count() < 1) return results;
+        if (msg.param_count() < 1) {
+            return results;
+        }
         transfer_mgr.cancel_session(msg.param(0), conn->fd_);
         return results;
     };
@@ -331,9 +349,18 @@ WsAppRouter::WsAppRouter() {
                          RoomManager& room_mgr,
                          TransferManager& /*transfer_mgr*/) -> std::vector<WsTargetedMessage> {
         std::vector<WsTargetedMessage> results;
-        if (msg.param_count() < 2) return results;
+        if (msg.param_count() < 2) {
+            return results;
+        }
         int target_fd = 0;
-        try { target_fd = std::stoi(msg.param(0)); } catch (...) { return results; }
+        try { 
+            target_fd = std::stoi(msg.param(0)); 
+        } 
+        catch (const std::exception& e) {
+            std::cerr << "OFFER parse target_fd failed: " << e.what() 
+                    << " for param '" << msg.param(0) << "'" << std::endl;
+            return results;
+        }
         auto room = room_mgr.get_or_create(conn->get_room_id());
         if (auto target = find_connection(room->get_live_connections(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
@@ -350,9 +377,19 @@ WsAppRouter::WsAppRouter() {
                           RoomManager& room_mgr,
                           TransferManager& /*transfer_mgr*/) -> std::vector<WsTargetedMessage> {
         std::vector<WsTargetedMessage> results;
-        if (msg.param_count() < 2) return results;
+        // 
+        if (msg.param_count() < 2) {
+            return results;
+        }
         int target_fd = 0;
-        try { target_fd = std::stoi(msg.param(0)); } catch (...) { return results; }
+        try { 
+            target_fd = std::stoi(msg.param(0)); 
+        } 
+        catch (const std::exception& e) {
+            std::cerr << "ANSWER parse target_fd failed: " << e.what() 
+                    << " for param '" << msg.param(0) << "'" << std::endl;
+            return results;
+        }
         auto room = room_mgr.get_or_create(conn->get_room_id());
         if (auto target = find_connection(room->get_live_connections(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
@@ -368,9 +405,18 @@ WsAppRouter::WsAppRouter() {
                        RoomManager& room_mgr,
                        TransferManager& /*transfer_mgr*/) -> std::vector<WsTargetedMessage> {
         std::vector<WsTargetedMessage> results;
-        if (msg.param_count() < 2) return results;
+        if (msg.param_count() < 2) {
+            return results;
+        }
         int target_fd = 0;
-        try { target_fd = std::stoi(msg.param(0)); } catch (...) { return results; }
+        try { 
+            target_fd = std::stoi(msg.param(0)); 
+        } 
+        catch (const std::exception& e) {
+            std::cerr << "ICE parse target_fd failed: " << e.what() 
+                    << " for param '" << msg.param(0) << "'" << std::endl;
+            return results;
+        }
         auto room = room_mgr.get_or_create(conn->get_room_id());
         if (auto target = find_connection(room->get_live_connections(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
@@ -389,9 +435,18 @@ WsAppRouter::WsAppRouter() {
                          RoomManager& room_mgr,
                          TransferManager& /*transfer_mgr*/) -> std::vector<WsTargetedMessage> {
         std::vector<WsTargetedMessage> results;
-        if (msg.param_count() < 3) return results;
+        if (msg.param_count() < 3) {
+            return results;
+        }
         int target_fd = 0;
-        try { target_fd = std::stoi(msg.param(0)); } catch (...) { return results; }
+        try { 
+            target_fd = std::stoi(msg.param(0)); 
+        } 
+        catch (const std::exception& e) {
+            std::cerr << "MEDIA parse target_fd failed: " << e.what() 
+                    << " for param '" << msg.param(0) << "'" << std::endl;
+            return results;
+        }
         auto room = room_mgr.get_or_create(conn->get_room_id());
         if (auto target = find_connection(room->get_live_connections(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
@@ -410,7 +465,7 @@ void WsAppRouter::on_default(Handler handler) {
     this->default_handler_ = std::move(handler);
 }
 
-bool WsAppRouter::route(const WsAppMessage& msg,
+bool WsAppRouter::handle(const WsAppMessage& msg,
                              const std::shared_ptr<Connection>& conn,
                              RoomManager& room_mgr,
                              TransferManager& transfer_mgr,

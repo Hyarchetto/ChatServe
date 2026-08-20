@@ -48,10 +48,10 @@ void WsHandler::handle_ws(const std::shared_ptr<Connection>& conn) {
         }
 
         // ---- 2. TEXT 路由 ----
-        // 每条消息单独转发，route 内部 out = handler() 会替换而非追加
+        // 每条消息单独转发，handle 内部 out = handler() 会替换而非追加
         for (auto& text : msgs) {
             std::vector<WsTargetedMessage> per_msg;
-            this->ws_app_router_.route(WsAppParser::parse(text), conn,
+            this->ws_app_router_.handle(WsAppParser::parse(text), conn,
                                    this->room_mgr_,
                                    this->transfer_mgr_,
                                    per_msg);

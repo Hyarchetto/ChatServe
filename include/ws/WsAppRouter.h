@@ -37,8 +37,8 @@ public:
     // 注册默认处理器，裸文本或未识别的命令
     void on_default(Handler handler);
 
-    // 路由消息，结果写入 out；返回是否匹配到了处理器
-    bool route(const WsAppMessage& msg,
+    // 分发消息，结果写入 out；返回是否匹配到了处理器
+    bool handle(const WsAppMessage& msg,
                const std::shared_ptr<Connection>& conn,
                RoomManager& room_mgr,
                TransferManager& transfer_mgr,

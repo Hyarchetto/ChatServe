@@ -31,3 +31,9 @@ valgrind.out
 
 # Secrets
 scripts/key.pem
+
+# Test scripts，不上传 GitHub
+scripts/test_shutdown.sh
+test/benchmark.py
+test/WsParserTest.cpp
+test/webrtc_test.py

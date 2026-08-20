@@ -11,12 +11,19 @@
 class HttpRouter {
 public:
     HttpRouter();
+
+    using Handler = std::function<HttpResponse(const HttpRequest&)>;
+
+    // 注册路径处理器
+    void on(const std::string& path, Handler handler);
+
+    // 注册默认处理器，未匹配路径时兜底
+    void on_default(Handler handler);
+
+    // 分发请求，返回响应
     HttpResponse handle(const HttpRequest& req) const;
 
 private:
-    using HandlerFunc = std::function<HttpResponse(const HttpRequest&)>;
-
-    std::unordered_map<std::string, HandlerFunc> routes_;
-
-    void add(const std::string& path, HandlerFunc handler);
+    std::unordered_map<std::string, Handler> handlers_;
+    Handler default_handler_;
 };
