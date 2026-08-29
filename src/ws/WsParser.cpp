@@ -22,7 +22,7 @@ static void deliver_message(WsResult& result, WsOpcode opcode, std::string messa
 
 // ==================== 帧解析 ====================
 
-WsResult WsParser::handle(const std::string& buffer,
+WsResult WsParser::handle(std::string_view buffer,
                                               WsFragmentState* frag) {
     WsResult result;
 

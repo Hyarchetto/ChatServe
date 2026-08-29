@@ -53,9 +53,6 @@ public:
     // 比如从只读改成读写，或去掉写事件
     void mod_event(int fd, uint32_t events);
 
-    // 检查某个 fd 是否已经注册到本事件循环
-    bool has_event(int fd) const;
-
     // ==================== 跨线程任务投递 ====================
 
     // 把一个回调扔到 IO 线程去执行

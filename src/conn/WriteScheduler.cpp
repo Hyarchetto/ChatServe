@@ -1,8 +1,7 @@
 // 写调度器 — 响应发送队列和部分发送管理
-#include "server/WriteScheduler.h"
+#include "conn/WriteScheduler.h"
 #include "core/EventLoop.h"
 
-#include <unordered_set>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cerrno>
@@ -22,32 +21,37 @@ void WriteScheduler::push_response(const std::shared_ptr<Connection>& conn,
 }
 
 void WriteScheduler::flush_responses() {
-    if (this->flushing_) return;
-    this->flushing_ = true;
-    drain_one(this->queue_high_);
-    drain_one(this->queue_low_);
-    this->flushing_ = false;
+    // 防止递归调用死锁
+    if (this->flushing_) {
+        return;
+    }
+    else{
+        this->flushing_ = true;
+        this->drain_one(this->queue_high_);
+        this->drain_one(this->queue_low_);
+        this->flushing_ = false;
+    }
 }
 
 void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
     std::queue<PendingResponse> local{};
     std::swap(local, q);
 
-    // 跟踪因 EAGAIN 未发完的 fd，跳过后续同 fd 消息避免帧交织
-    std::unordered_set<int> pending_fds;
-
     while (!local.empty()) {
         auto item = std::move(local.front());
         local.pop();
 
         int fd = item.conn_->fd_;
-        if (!this->loop_.has_event(fd)) {
+        // 连接已从循环拆除则丢弃 alive_ 在 del_connection 与摘除同步置 false
+        if (!item.conn_->alive_) {
             continue;
         }
 
-        // 该 fd 上还有未发完数据，将消息放回队列等 EPOLLOUT 恢复后再发
-        if (pending_fds.count(fd)) {
-            q.push(std::move(item));
+        // 该连接已有未发完数据 直接追加保持帧顺序 再立刻尝试发送
+        if (auto p_it = this->pending_writes_.find(item.conn_);
+            p_it != this->pending_writes_.end()) {
+            p_it->second.append(std::move(item.data_));
+            this->handle_write(item.conn_);
             continue;
         }
 
@@ -66,7 +70,6 @@ void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
             }
             else {
                 if (errno == EAGAIN) {
-                    pending_fds.insert(fd);
                     break;
                 }
                 else if (errno == EPIPE) {
@@ -87,13 +90,9 @@ void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
                 this->del_connection_(item.conn_);
             }
         }
-        // 没发完的连接注册写事件
+        // 没发完的连接注册写事件 未发段直接追加进待写缓冲
         else {
-            std::string remainder = wire.substr(sent);
-            auto [it, inserted] = this->pending_writes_.try_emplace(item.conn_, std::move(remainder));
-            if (!inserted) {
-                it->second.append(remainder);
-            }
+            this->pending_writes_[item.conn_].append(wire.data() + sent, wire.size() - sent);
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET | EPOLLOUT);
             // 立即尝试冲刷，防止ET饥饿
             this->handle_write(item.conn_);
@@ -105,14 +104,15 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
     int fd = conn->fd_;
 
     auto it = this->pending_writes_.find(conn);
-    if (it == this->pending_writes_.end()) return;
-
-    std::string& data = it->second;
-    ssize_t total = static_cast<ssize_t>(data.size());
+    if (it == this->pending_writes_.end()) {
+        return;
+    }
+    LazyBuffer& buf = it->second;
+    ssize_t total = static_cast<ssize_t>(buf.size());
     ssize_t sent = 0;
 
     while (sent < total) {
-        if (ssize_t n = send(fd, data.data() + sent, total - sent, 0);
+        if (ssize_t n = send(fd, buf.data() + sent, total - sent, 0);
                     n > 0) {
             sent += n;
         }
@@ -140,8 +140,8 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
 
     if (sent >= total) {
         this->pending_writes_.erase(conn);
-        // 还有效则删除写事件
-        if (this->loop_.has_event(fd)) {
+        // 连接还存活才删除写事件
+        if (conn->alive_) {
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET);
         }
         // 连接可写了，处理之前因 EAGAIN 被重入队列的消息
@@ -151,7 +151,7 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
         }
     }
     else {
-        data.erase(0, sent);
+        buf.consume(sent);
     }
 }
 

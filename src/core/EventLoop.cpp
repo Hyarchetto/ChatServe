@@ -114,11 +114,6 @@ void EventLoop::mod_event(int fd, uint32_t events) {
     epoll_ctl(this->epollfd_, EPOLL_CTL_MOD, fd, &ev);
 }
 
-// 检查某个 fd 是否已经注册到本 EventLoop 中
-bool EventLoop::has_event(int fd) const {
-    return this->event_map_.find(fd) != this->event_map_.end();
-}
-
 // 线程池通过这个函数把活投回 IO 线程
 void EventLoop::run_in_loop(std::function<void()> cb) {
     {

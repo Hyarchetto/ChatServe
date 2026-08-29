@@ -3,9 +3,9 @@
 #include "ws/WsAppRouter.h"
 #include "ws/WsAppParser.h"
 #include "ws/WsFrame.h"
-#include "server/Connection.h"
+#include "conn/Connection.h"
 #include "chatroom/Room.h"
-#include "transfer/TransferManager.h"
+#include "chatroom/TransferManager.h"
 
 // 在房间连接列表里按 fd 找目标连接，找不到返回 nullptr
 static std::shared_ptr<Connection> find_connection(
@@ -59,34 +59,41 @@ WsAppRouter::WsAppRouter() {
         conn->set_identity(msg.param(0), msg.param(1));
         room->add_num(conn);
 
-        // 确认，带上服务端分配的 id -- fd
+        // 确认 服务端分配的 id 就是 fd 客户端只认 fd
         results.push_back({conn,
             WsFrame::build(WsOpcode::TEXT,
-                WsAppParser::build("OK", conn->get_room_id(), conn->get_nickname(),
+                WsAppParser::build("OK", conn->get_room_id(),
                     std::to_string(conn->fd_)))});
 
-        // SYS + MEMBERS 共用一次 get_live_connections
+        // MEMBERS 带 fd:nick 映射 是客户端本地昵称表的唯一来源
+        // 先发 MEMBERS 再发 JOIN 让其他成员能查到新加入者的昵称
         auto live = room->get_live_connections();
-        std::string sys = WsFrame::build(WsOpcode::TEXT,
-            WsAppParser::build("SYS", conn->get_nickname() + " 加入房间"));
-        broadcast_except(live, conn->fd_, results, sys);
-
         {
             std::string joined;
             for (size_t i = 0; i < live.size(); ++i) {
-                if (i > 0) joined += ",";
+                if (i > 0) {
+                    joined += ",";
+                }
                 joined += std::to_string(live[i]->fd_) + ":" + live[i]->get_nickname();
             }
             std::string members_frame = WsFrame::build(WsOpcode::TEXT,
                 WsAppParser::build("MEMBERS", joined));
-            broadcast_except(live, conn->fd_, results, members_frame);
+            // 发给所有成员含新加入者 新加入者需要成员列表来建立 P2P 连接
+            for (auto& c : live) {
+                results.push_back({c, members_frame});
+            }
         }
+
+        // 加入通知只带 fd 昵称由客户端从本地映射解析
+        std::string join_frame = WsFrame::build(WsOpcode::TEXT,
+            WsAppParser::build("JOIN", std::to_string(conn->fd_)));
+        broadcast_except(live, conn->fd_, results, join_frame);
 
         return results;
     });
 
     // ========== 聊天消息 ==========
-    // MSG|fd|昵称|内容
+    // MSG|fd|内容
     auto broadcast_chat = [](const std::string& content,
                              const std::shared_ptr<Connection>& conn,
                              RoomManager& room_mgr) -> std::vector<WsTargetedMessage> {
@@ -95,10 +102,10 @@ WsAppRouter::WsAppRouter() {
         if (conn->get_room_id().empty()) return results;
         // 获取房间
         auto room = room_mgr.get_or_create(conn->get_room_id());
-        // 构建文本帧
+        // 构建文本帧 只带发送者 fd 昵称由客户端从本地映射解析
         std::string wire = WsFrame::build(WsOpcode::TEXT,
             WsAppParser::build("MSG",
-                std::to_string(conn->fd_), conn->get_nickname(), content));
+                std::to_string(conn->fd_), content));
         
         broadcast_except(room->get_live_connections(), conn->fd_, results, wire);
         return results;
@@ -126,6 +133,8 @@ WsAppRouter::WsAppRouter() {
                            TransferManager& transfer_mgr) -> std::vector<WsTargetedMessage> {
         std::vector<WsTargetedMessage> results;
         if (msg.param_count() < 2) return results;
+        // 未加入房间的防御性检查 与 MSG 对齐 防止文件注册到空房间
+        if (conn->get_room_id().empty()) return results;
 
         std::string filename = msg.param(0);
         size_t filesize = 0;
@@ -139,19 +148,19 @@ WsAppRouter::WsAppRouter() {
         }
 
         std::string file_id = transfer_mgr.register_file(
-            filename, filesize, conn->get_room_id(), conn->fd_);
-        if (file_id.empty()) return results;
-
+            filename, filesize, conn);
+        if (file_id.empty()) {
+            return results;
+        }
         // 回复 UPOK 给上传方
         results.push_back({conn,
             WsFrame::build(WsOpcode::TEXT,
                 WsAppParser::build("UPOK", file_id))});
 
-        // 广播 FILE 通知给房间其他人，末尾带上上传方 fd 作为唯一标识
+        // 广播 FILE 通知给房间其他人 末尾带上上传方 fd 作为唯一标识
         std::string notify = WsFrame::build(WsOpcode::TEXT,
             WsAppParser::build("FILE",
-                {file_id, filename, std::to_string(filesize), conn->get_nickname(),
-                 std::to_string(conn->fd_)}));
+                {file_id, filename, std::to_string(filesize), std::to_string(conn->fd_)}));
 
         auto room = room_mgr.get_or_create(conn->get_room_id());
         broadcast_except(room->get_live_connections(), conn->fd_, results, notify);
@@ -173,7 +182,7 @@ WsAppRouter::WsAppRouter() {
 
         // 校验归属：文件存在且属于当前上传方
         auto reg = transfer_mgr.get_registration(file_id);
-        if (reg.file_id_.empty() || reg.uploader_fd_ != conn->fd_) {
+        if (reg.file_id_.empty() || reg.uploader_ != conn) {
             return results;
         }
 
@@ -182,7 +191,7 @@ WsAppRouter::WsAppRouter() {
         // 广播文件失效，房间内所有下载方卡片显示已失效，与退出房间一致
         std::string dwerr = WsFrame::build(WsOpcode::TEXT,
             WsAppParser::build("DWERR", file_id, "上传已取消"));
-        auto room = room_mgr.get_or_create(reg.room_id_);
+        auto room = room_mgr.get_or_create(conn->get_room_id());
         broadcast_except(room->get_live_connections(), conn->fd_, results, dwerr);
 
         results.push_back({conn,
@@ -195,7 +204,7 @@ WsAppRouter::WsAppRouter() {
     // 启动独立窗口传输
     this->on("DOWNLOAD", [](const WsAppMessage& msg,
                              const std::shared_ptr<Connection>& conn,
-                             RoomManager& room_mgr,
+                             RoomManager& /*room_mgr*/,
                              TransferManager& transfer_mgr) -> std::vector<WsTargetedMessage> {
         std::vector<WsTargetedMessage> results;
         if (msg.param_count() < 1) return results;
@@ -206,6 +215,13 @@ WsAppRouter::WsAppRouter() {
             results.push_back({conn,
                 WsFrame::build(WsOpcode::TEXT,
                     WsAppParser::build("SYS", "ERR|文件不存在"))});
+            return results;
+        }
+        // 上传方已离线 文件实际不可下载 与 DWACK 路径一致 不创建传输会话
+        if (!reg.uploader_ || !reg.uploader_->alive_) {
+            results.push_back({conn,
+                WsFrame::build(WsOpcode::TEXT,
+                    WsAppParser::build("DWERR", reg.file_id_, "上传方已离开，下载失败"))});
             return results;
         }
 
@@ -224,7 +240,7 @@ WsAppRouter::WsAppRouter() {
 
         // 启动传输，获取初始窗口请求
         uint64_t session_id = 0;
-        auto init_reqs = transfer_mgr.start_transfer(file_id, conn->fd_, start_offset, session_id);
+        auto init_reqs = transfer_mgr.start_transfer(file_id, conn, start_offset, session_id);
         if (init_reqs.empty()) {
             results.push_back({conn,
                 WsFrame::build(WsOpcode::TEXT,
@@ -238,9 +254,8 @@ WsAppRouter::WsAppRouter() {
                 WsAppParser::build("DWSTART",
                     reg.file_id_, reg.filename_, std::to_string(reg.filesize_)))});
 
-        // 在房间中找到上传方并发 DWREQ，带上 session_id
-        auto room = room_mgr.get_or_create(reg.room_id_);
-        if (auto uploader = find_connection(room->get_live_connections(), reg.uploader_fd_)) {
+        // 上传方在传输启动到发请求之间可能掉线 存活则发 DWREQ 否则告知下载方
+        if (auto uploader = reg.uploader_; uploader && uploader->alive_) {
             for (auto& req : init_reqs) {
                 results.push_back({uploader,
                     WsFrame::build(WsOpcode::TEXT,
@@ -251,6 +266,11 @@ WsAppRouter::WsAppRouter() {
                             std::to_string(req.size_)))});
             }
         }
+        else {
+            results.push_back({conn,
+                WsFrame::build(WsOpcode::TEXT,
+                    WsAppParser::build("DWERR", reg.file_id_, "上传方已离开，下载失败"))});
+        }
 
         return results;
     });
@@ -260,7 +280,7 @@ WsAppRouter::WsAppRouter() {
     // 协议: DWACK|<session_id>|<offset>
     this->on("DWACK", [](const WsAppMessage& msg,
                           const std::shared_ptr<Connection>& conn,
-                          RoomManager& room_mgr,
+                          RoomManager& /*room_mgr*/,
                           TransferManager& transfer_mgr) -> std::vector<WsTargetedMessage> {
         std::vector<WsTargetedMessage> results;
         if (msg.param_count() < 2) {
@@ -291,14 +311,9 @@ WsAppRouter::WsAppRouter() {
 
         // 发送下一个 DWREQ 给上传方
         if (ar.next_) {
-            // 从文件注册获取房间信息以定位上传方 Connection
-            auto reg = transfer_mgr.get_registration(ar.next_->file_id_);
-            std::shared_ptr<Connection> uploader;
-            if (!reg.file_id_.empty()) {
-                uploader = find_connection(room_mgr.get_or_create(reg.room_id_)->get_live_connections(),
-                                           ar.next_->uploader_fd_);
-            }
-            if (uploader) {
+            auto uploader = ar.next_->uploader_;
+            // 上传方已断开则通知下载方，否则发下一个请求
+            if (uploader && uploader->alive_) {
                 results.push_back({uploader,
                     WsFrame::build(WsOpcode::TEXT,
                         WsAppParser::build("DWREQ",
@@ -307,7 +322,6 @@ WsAppRouter::WsAppRouter() {
                             std::to_string(ar.next_->offset_),
                             std::to_string(ar.next_->size_)))});
             }
-            // 上传方已不在房间，通知下载方
             else {
                 results.push_back({conn,
                     WsFrame::build(WsOpcode::TEXT,
@@ -330,7 +344,7 @@ WsAppRouter::WsAppRouter() {
         if (msg.param_count() < 1) {
             return results;
         }
-        transfer_mgr.cancel_session(msg.param(0), conn->fd_);
+        transfer_mgr.cancel_session(msg.param(0), conn);
         return results;
     };
     this->on("DWNPAUSE", cancel_session);
@@ -365,7 +379,7 @@ WsAppRouter::WsAppRouter() {
         if (auto target = find_connection(room->get_live_connections(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
                 WsAppParser::build("OFFER",
-                    std::to_string(conn->fd_), conn->get_nickname(), msg.param(1)))});
+                    std::to_string(conn->fd_), msg.param(1)))});
         }
         return results;
     });

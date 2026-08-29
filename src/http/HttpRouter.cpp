@@ -11,41 +11,14 @@ HttpRouter::HttpRouter() {
         return resp;
     });
 
-    // 静态文件
+    // 静态文件 Vue 前端入口
     on("/chat", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/chat.html");
-    });
-    on("/js/app.js", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/js/app.js");
-    });
-    on("/js/state.js", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/js/state.js");
-    });
-    on("/js/utils.js", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/js/utils.js");
-    });
-    on("/js/ui.js", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/js/ui.js");
-    });
-    on("/js/connection.js", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/js/connection.js");
-    });
-    on("/js/webrtc.js", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/js/webrtc.js");
-    });
-    on("/js/file-transfer.js", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/js/file-transfer.js");
-    });
-    on("/js/protocol.js", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/js/protocol.js");
-    });
-    on("/css/style.css", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve("./static/chat/css/style.css");
+        return StaticFileServer::serve("./static/index.html");
     });
 
-    // 默认处理器，未匹配路径时按静态文件兜底
+    // 默认处理器 未匹配路径按静态文件兜底 从 static/ 目录读
     on_default([](const HttpRequest& req) {
-        return StaticFileServer::serve(req.path_.substr(1));
+        return StaticFileServer::serve("./static/" + req.path_.substr(1));
     });
 }
 

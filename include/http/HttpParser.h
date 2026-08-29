@@ -3,6 +3,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <sstream>
 #include <cstring>
 #include <algorithm>
@@ -30,8 +31,8 @@ class HttpParser {
 public:
     HttpParser() = default;
     // 喂数据并解析，返回解析结果
-    static HttpResult handle(const std::string& buf);
+    static HttpResult handle(std::string_view buf);
 private:
     // 从 pos 读一行，返回 true 表示读到了完整行
-    static bool read_line(const std::string& buf, size_t& pos, std::string& line);
+    static bool read_line(std::string_view buf, size_t& pos, std::string& line);
 };

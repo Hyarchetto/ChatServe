@@ -5,22 +5,19 @@
 
 #include <memory>
 
-#include "Connection.h"
-#include "ConnRegistry.h"
-#include "WriteScheduler.h"
+#include "../conn/Connection.h"
+#include "../conn/WriteScheduler.h"
 #include "../core/EventLoop.h"
 #include "../core/ThreadPool.h"
-#include "../ws/WsAppRouter.h"
+#include "WsAppRouter.h"
 #include "../chatroom/Room.h"
-#include "../transfer/TransferManager.h"
+
+class TransferManager;
 
 class WsHandler {
 public:
     WsHandler(EventLoop& loop, ThreadPool& works,
-                 WsAppRouter& ws_app_router,
                  RoomManager& room_mgr,
-                 TransferManager& transfer_mgr,
-                 ConnRegistry& conn_registry,
                  WriteScheduler& writer);
 
     void handle_ws(const std::shared_ptr<Connection>& conn);
@@ -28,11 +25,13 @@ public:
     void cleanup(const std::shared_ptr<Connection>& conn);
 
 private:
+    // 取 conn 所在房间的文件传输管理器 传输状态归房间 每个房间独立
+    TransferManager& transfer_mgr_of(const std::shared_ptr<Connection>& conn);
+
     EventLoop& loop_;
     ThreadPool& works_;
-    WsAppRouter& ws_app_router_;
+    // 应用层路由只被本类消费 内部持有 路由表构造时固定 运行期只读
+    WsAppRouter ws_app_router_;
     RoomManager& room_mgr_;
-    TransferManager& transfer_mgr_;
-    ConnRegistry& conn_registry_;
     WriteScheduler& writer_;
 };

@@ -18,7 +18,7 @@ static bool icontains(const std::string& haystack, const std::string& needle) {
     return it != haystack.end();
 }
 
-bool HttpParser::read_line(const std::string& buf, size_t& pos, std::string& line) {
+bool HttpParser::read_line(std::string_view buf, size_t& pos, std::string& line) {
     auto n = buf.find("\r\n", pos);
     if (n == std::string::npos) return false;
     line = buf.substr(pos, n - pos);
@@ -26,7 +26,7 @@ bool HttpParser::read_line(const std::string& buf, size_t& pos, std::string& lin
     return true;
 }
 
-HttpResult HttpParser::handle(const std::string& buf) {
+HttpResult HttpParser::handle(std::string_view buf) {
     HttpResult result;
     size_t pos = 0;
 

@@ -1,128 +1,73 @@
-// 单 Reactor 多线程 TCP 服务器
-
+// Reactor — 统一事件循环服务器单元
 #include "server/Reactor.h"
+#include "server/Acceptor.h"
+#include "core/ThreadPool.h"
+#include "chatroom/Room.h"
 
-#include <sys/socket.h>
+#include <sys/epoll.h>
 #include <unistd.h>
-#include <cerrno>
-#include <cstdio>
-#include <cstring>
+#include <iostream>
 
-// ======================================== 构造析构 ========================================
-Reactor::Reactor()
-    : writer_(this->loop_, [this](const auto& c) {
-          this->close_connection(c);
-      })
-    , acceptor_(this->loop_)
-    , http_handler_(this->loop_, this->works_, this->http_router_, this->writer_,
-                    [this](const auto& c) { this->close_connection(c); })
-    , ws_handler_(this->loop_, this->works_, this->ws_app_router_,
-                  this->room_mgr_, this->transfer_mgr_,
-                  this->conn_registry_, this->writer_) {}
+Reactor::Reactor() {
+    // fd 去路兜底 未绑定前接收的 fd 打日志并关闭 避免空函数调用崩溃和 fd 泄漏
+    this->fd_handler_ = [](int fd) {
+        std::cerr << "fd 去路未绑定 丢弃 fd=" << fd << std::endl;
+        close(fd);
+    };
+}
 
 Reactor::~Reactor() {
     this->stop();
+}
+
+// 创建监听组件 Acceptor
+void Reactor::create_acceptor() {
+    this->acceptor_ = std::make_unique<Acceptor>();
+}
+
+// 创建连接处理器并绑定 fd 去路 公共资源经此注入 默认直接走本地
+void Reactor::create_handler(ThreadPool& works, RoomManager& room_mgr) {
+    this->conn_handler_ = std::make_unique<ConnHandler>(this->loop_, works, room_mgr);
+    this->fd_handler_ = [this](int fd) {
+        this->conn_handler_->add_connection(fd);
+    };
+}
+
+void Reactor::set_fd_handler(std::function<void(int)> handler) {
+    this->fd_handler_ = std::move(handler);
 }
 
 bool Reactor::init() {
     return this->loop_.init();
 }
 
-void Reactor::stop() {
-    this->loop_.quit();
-    this->works_.shutdown();
-}
-
-// 信号处理器专用 只做异步信号安全操作 不做线程池收尾
-void Reactor::request_stop() {
-    this->loop_.quit();
-}
-
-// ======================================== 监听 委托给 Acceptor ========================================
-
+// 内部 Acceptor 只提供监听逻辑 事件循环不暴露 由本类把监听 fd 挂入内部 epoll
 void Reactor::start_listen(int port) {
-    this->acceptor_.start_listen(port,
-        [this](int fd) { this->add_connection(fd); });
+    if (!this->acceptor_) {
+        std::cerr<<"Acceptor未创建"<<std::endl;
+        return;
+    }
+    int listenfd = this->acceptor_->start_listen(port);
+    if (listenfd < 0) {
+        return;
+    }
+    this->loop_.add_event(listenfd, EPOLLIN | EPOLLET,
+        [this, listenfd]() {
+            this->acceptor_->accept_connections(listenfd,
+                [this](int fd) { this->fd_handler_(fd); });
+        });
 }
 
-// ======================================== 事件循环 ========================================
+// 从属入口 网关从其他线程投递 fd 通过 run_in_loop 切到本事件循环执行
+// 直接跨线程调 add_connection 会改 event_map_ 非线程安全
+void Reactor::add_connection(int fd) {
+    this->loop_.run_in_loop([this, fd]() { this->fd_handler_(fd); });
+}
 
 void Reactor::loop() {
     this->loop_.loop();
 }
 
-// ======================================== 连接管理 ========================================
-void Reactor::add_connection(int fd) {
-    auto conn = std::make_shared<Connection>(fd);
-    this->conn_registry_.add(fd, conn);
-    this->loop_.add_event(fd, EPOLLIN | EPOLLET,
-        [this, conn]() { this->handle_clientfd(conn); },
-        [this, conn]() { this->writer_.handle_write(conn); },
-        [this, conn]() { this->close_connection(conn); });
-}
-// ======================================== 关闭连接 ========================================
-void Reactor::close_connection(const std::shared_ptr<Connection>& conn) {
-    // 通用销毁
-    this->del_connection(conn);
-    // 协议清理
-    if (conn->ws_mode_) {
-        this->ws_handler_.cleanup(conn);
-    }
-    // HTTP 无跨连接状态，无需额外清理
-}
-// ======================================== 通用关闭 ========================================
-void Reactor::del_connection(const std::shared_ptr<Connection>& conn) {
-    int fd = conn->fd_;
-    conn->alive_ = false;
-    this->conn_registry_.remove(fd);
-    this->writer_.remove_pending(conn);
-    this->loop_.del_event(fd);
-}
-
-// ======================================== 读取数据 ========================================
-
-bool Reactor::read_data(const std::shared_ptr<Connection>& conn) {
-    int clientfd = conn->fd_;
-    char temp_buffer[BUFFER_SIZE];
-
-    while (true) {
-        ssize_t bytes_recv = recv(clientfd, temp_buffer, sizeof(temp_buffer), 0);
-        if (bytes_recv > 0) {
-            conn->read_buf_.append(temp_buffer, bytes_recv);
-            continue;
-        }
-        if (bytes_recv == 0) {
-            this->close_connection(conn);
-            return false;
-        }
-        else{
-            if (errno == EAGAIN) {
-                break;
-            }
-            else{
-                perror("recv");
-                this->close_connection(conn);
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-// ======================================== 客户端数据总入口 ========================================
-
-void Reactor::handle_clientfd(const std::shared_ptr<Connection>& conn) {
-    // 啥也没读到，直接返回
-    if (!this->read_data(conn) || conn->read_buf_.empty()) {
-        return;
-    }
-    // 根据连接协议选择不同的处理方式
-    else{
-        if (conn->ws_mode_) {
-            this->ws_handler_.handle_ws(conn);
-        }
-        else {
-            this->http_handler_.handle_http(conn);
-        }
-    }
+void Reactor::stop() {
+    this->loop_.quit();
 }

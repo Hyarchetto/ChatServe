@@ -11,11 +11,12 @@
 #include <unistd.h>
 
 #include "../ws/WsFragmentState.h"
+#include "LazyBuffer.h"
 
 class Connection {
 public:
     int fd_;                                    // 套接字 fd
-    std::string read_buf_;                      // 累积读取缓冲区
+    LazyBuffer read_buf_;                       // 累积读取缓冲区
     std::atomic<bool> pending_close_{false};    // 关闭信号
     std::atomic<bool> alive_{true};             // 是否还在连接管理器中
 
@@ -43,7 +44,9 @@ public:
     }
 
     ~Connection(){
-        if (fd_ >= 0) close(this->fd_);
+        if (fd_ >= 0) {
+            close(this->fd_);
+        }
     }
 
 private:

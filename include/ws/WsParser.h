@@ -3,6 +3,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <cstdint>
 
@@ -26,6 +27,6 @@ public:
     WsParser() = default;
 
     // 解析缓冲区，返回解析结果，可能有多条消息
-    static WsResult handle(const std::string& buffer,
+    static WsResult handle(std::string_view buffer,
                                         WsFragmentState* frag);
 };

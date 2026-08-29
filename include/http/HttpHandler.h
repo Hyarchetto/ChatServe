@@ -6,26 +6,22 @@
 #include <memory>
 #include <functional>
 
-#include "Connection.h"
+#include "../conn/Connection.h"
 #include "../core/EventLoop.h"
 #include "../core/ThreadPool.h"
-#include "../http/HttpRouter.h"
-#include "WriteScheduler.h"
+#include "HttpRouter.h"
+#include "../conn/WriteScheduler.h"
 
 class HttpHandler {
 public:
-    using CloseConnectionFn = std::function<void(const std::shared_ptr<Connection>&)>;
-
-    HttpHandler(EventLoop& loop, ThreadPool& works,
-                   HttpRouter& http_router, WriteScheduler& writer,
-                   CloseConnectionFn close_conn);
+    HttpHandler(EventLoop& loop, ThreadPool& works, WriteScheduler& writer);
 
     void handle_http(const std::shared_ptr<Connection>& conn);
 
 private:
     EventLoop& loop_;
     ThreadPool& works_;
-    HttpRouter& http_router_;
+    // 路由只被本类消费 内部持有 路由表构造时固定 运行期只读
+    HttpRouter http_router_;
     WriteScheduler& writer_;
-    CloseConnectionFn close_connection_;
 };

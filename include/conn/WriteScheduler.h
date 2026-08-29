@@ -11,6 +11,7 @@
 #include <string>
 
 #include "Connection.h"
+#include "LazyBuffer.h"
 #include "../core/EventLoop.h"
 
 class WriteScheduler {
@@ -40,6 +41,6 @@ private:
 
     std::queue<PendingResponse> queue_high_;
     std::queue<PendingResponse> queue_low_;
-    std::unordered_map<std::shared_ptr<Connection>, std::string> pending_writes_;
+    std::unordered_map<std::shared_ptr<Connection>, LazyBuffer> pending_writes_;
     bool flushing_ = false;
 };

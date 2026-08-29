@@ -8,6 +8,8 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "TransferManager.h"
+
 class Connection;
 
 class Room {
@@ -18,9 +20,12 @@ public:
     void del_num(const std::shared_ptr<Connection>& conn);
     // 获取当前在线连接列表
     std::vector<std::shared_ptr<Connection>> get_live_connections();
+    // 房间内的文件传输管理器 传输会话随房间隔离 生命周期随房间
+    TransferManager& transfer_mgr() { return transfer_mgr_; }
 
 private:
     std::vector<std::weak_ptr<Connection>> connections_;
+    TransferManager transfer_mgr_;
     std::mutex mtx_;
 };
 

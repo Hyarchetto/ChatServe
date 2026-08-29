@@ -1,7 +1,6 @@
 // WsHandler — WebSocket 协议处理器
-#include "server/WsHandler.h"
-#include "server/Connection.h"
-#include "server/ConnRegistry.h"
+#include "ws/WsHandler.h"
+#include "conn/Connection.h"
 #include "core/EventLoop.h"
 #include "core/ThreadPool.h"
 #include "ws/WsParser.h"
@@ -9,22 +8,24 @@
 #include "ws/WsAppRouter.h"
 #include "ws/WsAppParser.h"
 #include "chatroom/Room.h"
-#include "transfer/TransferManager.h"
-#include "server/WriteScheduler.h"
+#include "chatroom/TransferManager.h"
+#include "conn/WriteScheduler.h"
 
 WsHandler::WsHandler(EventLoop& loop, ThreadPool& works,
-                     WsAppRouter& ws_app_router,
                      RoomManager& room_mgr,
-                     TransferManager& transfer_mgr,
-                     ConnRegistry& conn_registry,
                      WriteScheduler& writer)
-    : loop_(loop), works_(works), ws_app_router_(ws_app_router),
-      room_mgr_(room_mgr), transfer_mgr_(transfer_mgr),
-      conn_registry_(conn_registry), writer_(writer) {}
+    : loop_(loop), works_(works),
+      room_mgr_(room_mgr), writer_(writer) {}
+
+TransferManager& WsHandler::transfer_mgr_of(const std::shared_ptr<Connection>& conn) {
+    // 传输状态归 conn 所在房间 从房间取 每个房间独立
+    return this->room_mgr_.get_or_create(conn->get_room_id())->transfer_mgr();
+}
 
 void WsHandler::handle_ws(const std::shared_ptr<Connection>& conn) {
-    auto ws_result = WsParser::handle(conn->read_buf_, &conn->ws_frag_);
-    conn->read_buf_.erase(0, ws_result.consumed_);
+    auto ws_result = WsParser::handle({conn->read_buf_.data(), conn->read_buf_.size()},
+                                      &conn->ws_frag_);
+    conn->read_buf_.consume(ws_result.consumed_);
 
     if (ws_result.binary_messages_.empty() && 
         ws_result.messages_.empty() && 
@@ -38,6 +39,8 @@ void WsHandler::handle_ws(const std::shared_ptr<Connection>& conn) {
                          close = ws_result.close_,
                          close_payload = std::move(ws_result.close_payload_)]() {
         std::vector<std::function<void()>> io_actions;
+        // 传输状态归 conn 所在房间 本批消息共享同一房间的传输管理器
+        TransferManager& tm = this->transfer_mgr_of(conn);
 
         // ---- 1. PONG ----
         if (ping) {
@@ -53,7 +56,7 @@ void WsHandler::handle_ws(const std::shared_ptr<Connection>& conn) {
             std::vector<WsTargetedMessage> per_msg;
             this->ws_app_router_.handle(WsAppParser::parse(text), conn,
                                    this->room_mgr_,
-                                   this->transfer_mgr_,
+                                   tm,
                                    per_msg);
             if (!per_msg.empty()) {
                 io_actions.push_back([this, results = std::move(per_msg)]() {
@@ -66,10 +69,10 @@ void WsHandler::handle_ws(const std::shared_ptr<Connection>& conn) {
 
         // ---- 3. 查是否为传输分块 ----
         for (auto& chunk : binary) {
-            auto result = this->transfer_mgr_.handle_chunk_data(chunk);
+            auto result = tm.handle_chunk_data(chunk);
             if (result.valid_) {
-                // 在线程池中立即将 fd 解析为 shared_ptr，避免 IO 线程执行时 fd 被重用
-                if (auto dl_conn = this->conn_registry_.get(result.downloader_fd_)) {
+                // 会话持有下载方连接 断线后 alive_ 为 false 由写调度发送时过滤
+                if (auto dl_conn = result.downloader_) {
                     std::string dwdata = WsFrame::build(WsOpcode::TEXT,
                         WsAppParser::build("DWDATA",
                             std::to_string(result.session_id_),
@@ -84,15 +87,13 @@ void WsHandler::handle_ws(const std::shared_ptr<Connection>& conn) {
                     io_actions.push_back([this, dl_conn,
                                           dwdata = std::move(dwdata),
                                           bin = std::move(bin)]() {
-                        if (dl_conn->alive_) {
-                            this->writer_.push_response(dl_conn, std::move(dwdata), false);
-                            this->writer_.push_response(dl_conn, std::move(bin), false);
-                        }
+                        this->writer_.push_response(dl_conn, std::move(dwdata), false);
+                        this->writer_.push_response(dl_conn, std::move(bin), false);
                     });
                 }
                 // 滑动窗口有空位时发送下一个 DWREQ 给上传方
                 if (result.next_) {
-                    if (auto uploader_conn = this->conn_registry_.get(result.next_->uploader_fd_)) {
+                    if (auto uploader_conn = result.next_->uploader_) {
                         std::string dwreq = WsFrame::build(WsOpcode::TEXT,
                             WsAppParser::build("DWREQ",
                                 std::to_string(result.next_->session_id_),
@@ -100,9 +101,7 @@ void WsHandler::handle_ws(const std::shared_ptr<Connection>& conn) {
                                 std::to_string(result.next_->offset_),
                                 std::to_string(result.next_->size_)));
                         io_actions.push_back([this, uploader_conn, dwreq = std::move(dwreq)]() {
-                            if (uploader_conn->alive_) {
-                                this->writer_.push_response(uploader_conn, std::move(dwreq), true);
-                            }
+                            this->writer_.push_response(uploader_conn, std::move(dwreq), true);
                         });
                     }
                 }
@@ -132,16 +131,17 @@ void WsHandler::handle_ws(const std::shared_ptr<Connection>& conn) {
 }
 
 void WsHandler::cleanup(const std::shared_ptr<Connection>& conn) {
-    // WS 专属协议清理 由 Reactor::close_connection 分发调用 只做传输取消房间离开和广播
-    this->works_.submit([this, conn, room_id = conn->get_room_id(), nick = conn->get_nickname()]() {
+    // WS 专属协议清理 由 ConnHandler::close_connection 分发调用 只做传输取消房间离开和广播
+    this->works_.submit([this, conn, room_id = conn->get_room_id()]() {
         // 1. 清理传输，通知受影响的下载方
-        auto cancel_info = this->transfer_mgr_.cancel_by_fd(conn->fd_);
+        TransferManager& tm = this->transfer_mgr_of(conn);
+        auto cancel_info = tm.cancel_by_conn(conn);
 
         std::vector<std::pair<std::shared_ptr<Connection>, std::string>> dwerr_msgs;
         for (auto& sc : cancel_info.cancelled_) {
             std::string dwerr = WsFrame::build(WsOpcode::TEXT,
                 WsAppParser::build("DWERR", sc.file_id_, "上传方已离开，下载失败"));
-            if (auto oc = this->conn_registry_.get(sc.orphaned_downloader_fd_)) {
+            if (auto oc = sc.orphaned_downloader_) {
                 dwerr_msgs.push_back({std::move(oc), std::move(dwerr)});
             }
         }
@@ -151,7 +151,7 @@ void WsHandler::cleanup(const std::shared_ptr<Connection>& conn) {
             if (!dwerr_msgs.empty()) {
                 this->loop_.run_in_loop([this, dwerr = std::move(dwerr_msgs)]() {
                     for (auto& [c, msg] : dwerr) {
-                        if (c->alive_) this->writer_.push_response(c, msg, true);
+                        this->writer_.push_response(c, msg, true);
                     }
                     this->writer_.flush_responses();
                 });
@@ -163,12 +163,9 @@ void WsHandler::cleanup(const std::shared_ptr<Connection>& conn) {
         auto remaining = this->room_mgr_.leave_room(room_id, conn);
         if (remaining.empty() && dwerr_msgs.empty()) return;
 
-        // 4. 构造房间通知
-        std::string sys, members_frame;
+        // 4. 构造房间通知 只更新 MEMBERS 离开事件由 LEAVE 带 fd 客户端自行解析昵称
+        std::string members_frame;
         if (!remaining.empty()) {
-            sys = WsFrame::build(WsOpcode::TEXT,
-                WsAppParser::build("SYS", nick + " 离开房间"));
-
             std::string joined;
             for (size_t i = 0; i < remaining.size(); ++i) {
                 if (i > 0) joined += ",";
@@ -180,8 +177,8 @@ void WsHandler::cleanup(const std::shared_ptr<Connection>& conn) {
 
         std::vector<std::shared_ptr<Connection>> room_targets;
         for (auto& c : remaining) {
-            if (auto cc = this->conn_registry_.get(c->fd_)) {
-                room_targets.push_back(std::move(cc));
+            if (c->alive_) {
+                room_targets.push_back(c);
             }
         }
 
@@ -192,16 +189,13 @@ void WsHandler::cleanup(const std::shared_ptr<Connection>& conn) {
         this->loop_.run_in_loop([this, dwerr_msgs = std::move(dwerr_msgs),
                                  room_targets = std::move(room_targets),
                                  leave_frame,
-                                 sys, members_frame]() {
+                                 members_frame]() {
             for (auto& [c, msg] : dwerr_msgs) {
-                if (c->alive_) this->writer_.push_response(c, msg, true);
+                this->writer_.push_response(c, msg, true);
             }
             for (auto& c : room_targets) {
-                if (c->alive_) {
-                    this->writer_.push_response(c, leave_frame, true);
-                    this->writer_.push_response(c, sys, true);
-                    this->writer_.push_response(c, members_frame, true);
-                }
+                this->writer_.push_response(c, leave_frame, true);
+                this->writer_.push_response(c, members_frame, true);
             }
             this->writer_.flush_responses();
         });
