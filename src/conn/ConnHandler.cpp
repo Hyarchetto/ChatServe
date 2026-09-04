@@ -13,13 +13,14 @@ ConnHandler::ConnHandler(EventLoop& loop, ThreadPool& works,
                          RoomManager& room_mgr)
     : loop_(loop)
     , writer_(loop, [this](const auto& c) { this->close_connection(c); })
-    , http_handler_(loop, works, writer_)
-    , ws_handler_(loop, works, room_mgr, writer_) {}
+    , http_handler_(loop, works)
+    , ws_handler_(loop, works, room_mgr) {}
 
 // ======================================== 连接管理 ========================================
 void ConnHandler::add_connection(int fd) {
     // 连接所有权由事件循环回调捕获的 shared_ptr 持有 不再维护单独连接表
-    auto conn = std::make_shared<Connection>(fd);
+    // 构造即绑定归属写引擎 发送投递以它为目标
+    auto conn = std::make_shared<Connection>(fd, this->writer_);
     this->loop_.add_event(fd, EPOLLIN | EPOLLET,
         [this, conn]() { this->handle_clientfd(conn); },
         [this, conn]() { this->writer_.handle_write(conn); },

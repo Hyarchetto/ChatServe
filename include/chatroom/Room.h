@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 
 #include "TransferManager.h"
@@ -20,13 +21,13 @@ public:
     void del_num(const std::shared_ptr<Connection>& conn);
     // 获取当前在线连接列表
     std::vector<std::shared_ptr<Connection>> get_live_connections();
-    // 房间内的文件传输管理器 传输会话随房间隔离 生命周期随房间
+    // 房间内的文件传输管理器
     TransferManager& transfer_mgr() { return transfer_mgr_; }
 
 private:
     std::vector<std::weak_ptr<Connection>> connections_;
     TransferManager transfer_mgr_;
-    std::mutex mtx_;
+    std::shared_mutex mtx_;    // 成员列表锁
 };
 
 // 房间管理器
@@ -42,5 +43,6 @@ public:
 
 private:
     std::unordered_map<std::string, std::shared_ptr<Room>> rooms_;
-    std::mutex mtx_;
+    // 映射锁
+    std::shared_mutex mtx_;
 };

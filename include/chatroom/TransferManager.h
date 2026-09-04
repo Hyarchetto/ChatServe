@@ -34,7 +34,7 @@ struct TransferSession {
     size_t filesize_ = 0;                                       // 文件大小
     
     static constexpr size_t CHUNK_SIZE = 256 * 1024;            // 单个文件块大小为 256*1024 字节
-    static constexpr size_t WINDOW_SIZE = 4;                    // 窗口大小为4
+    static constexpr size_t WINDOW_SIZE = 8;                    // 窗口大小为8
 
     size_t next_req_offset_ = 0;                                // 下一个要请求的偏移量，>= filesize_ 表示所有块已请求
 
@@ -78,7 +78,6 @@ struct ChunkResult {
     size_t offset_ = 0;                      // 分块在文件内的偏移
     size_t size_ = 0;                        // 分块字节数
     std::shared_ptr<Connection> downloader_;   // 目标下载方连接
-    std::string data_;                       // 去掉 BINARY 帧头的分块数据
     // 窗口补发的下一个 DWREQ，无则 nullopt
     std::optional<NextRequest> next_;
 };
@@ -115,9 +114,6 @@ public:
 
     // 查询文件注册信息，file_id 不存在时返回空注册
     FileRegistration get_registration(const std::string& file_id);
-
-    // 构造 20 字节 BINARY 分块头 [session_id:8][offset:8][size:4] 帧构建时直接嵌入
-    static std::string make_chunk_header(uint64_t session_id, size_t offset, size_t size);
 
     // 启动传输，返回初始窗口的请求列表
     // 其中start_offset 为断点续传的起始偏移，普通下载传 0

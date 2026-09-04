@@ -27,6 +27,23 @@ static void broadcast_except(
     }
 }
 
+// 向某房间广播一帧给除 except_fd 外的成员 结果追加进 results
+static void broadcast_to_room(RoomManager& room_mgr,
+                              const std::string& room_id, int except_fd,
+                              const std::string& frame,
+                              std::vector<WsTargetedMessage>& results) {
+    auto room = room_mgr.get_or_create(room_id);
+    broadcast_except(room->get_live_connections(), except_fd, results, frame);
+}
+
+// 房间内按 fd 找目标连接 找不到返回 nullptr
+static std::shared_ptr<Connection> room_peer(RoomManager& room_mgr,
+                                             const std::string& room_id,
+                                             int target_fd) {
+    auto room = room_mgr.get_or_create(room_id);
+    return find_connection(room->get_live_connections(), target_fd);
+}
+
 WsAppRouter::WsAppRouter() {
     // ========== JOIN 处理器 ==========
     this->on("JOIN", [](const WsAppMessage& msg,
@@ -97,17 +114,15 @@ WsAppRouter::WsAppRouter() {
     auto broadcast_chat = [](const std::string& content,
                              const std::shared_ptr<Connection>& conn,
                              RoomManager& room_mgr) -> std::vector<WsTargetedMessage> {
-        // 获取连接的房间号
         std::vector<WsTargetedMessage> results;
-        if (conn->get_room_id().empty()) return results;
-        // 获取房间
-        auto room = room_mgr.get_or_create(conn->get_room_id());
+        std::string room_id = conn->get_room_id();
+        // 未加入房间不广播
+        if (room_id.empty()) return results;
         // 构建文本帧 只带发送者 fd 昵称由客户端从本地映射解析
         std::string wire = WsFrame::build(WsOpcode::TEXT,
             WsAppParser::build("MSG",
                 std::to_string(conn->fd_), content));
-        
-        broadcast_except(room->get_live_connections(), conn->fd_, results, wire);
+        broadcast_to_room(room_mgr, room_id, conn->fd_, wire, results);
         return results;
     };
 
@@ -134,7 +149,8 @@ WsAppRouter::WsAppRouter() {
         std::vector<WsTargetedMessage> results;
         if (msg.param_count() < 2) return results;
         // 未加入房间的防御性检查 与 MSG 对齐 防止文件注册到空房间
-        if (conn->get_room_id().empty()) return results;
+        std::string room_id = conn->get_room_id();
+        if (room_id.empty()) return results;
 
         std::string filename = msg.param(0);
         size_t filesize = 0;
@@ -162,8 +178,7 @@ WsAppRouter::WsAppRouter() {
             WsAppParser::build("FILE",
                 {file_id, filename, std::to_string(filesize), std::to_string(conn->fd_)}));
 
-        auto room = room_mgr.get_or_create(conn->get_room_id());
-        broadcast_except(room->get_live_connections(), conn->fd_, results, notify);
+        broadcast_to_room(room_mgr, room_id, conn->fd_, notify, results);
 
         return results;
     });
@@ -191,8 +206,7 @@ WsAppRouter::WsAppRouter() {
         // 广播文件失效，房间内所有下载方卡片显示已失效，与退出房间一致
         std::string dwerr = WsFrame::build(WsOpcode::TEXT,
             WsAppParser::build("DWERR", file_id, "上传已取消"));
-        auto room = room_mgr.get_or_create(conn->get_room_id());
-        broadcast_except(room->get_live_connections(), conn->fd_, results, dwerr);
+        broadcast_to_room(room_mgr, conn->get_room_id(), conn->fd_, dwerr, results);
 
         results.push_back({conn,
             WsFrame::build(WsOpcode::TEXT,
@@ -375,8 +389,7 @@ WsAppRouter::WsAppRouter() {
                     << " for param '" << msg.param(0) << "'" << std::endl;
             return results;
         }
-        auto room = room_mgr.get_or_create(conn->get_room_id());
-        if (auto target = find_connection(room->get_live_connections(), target_fd)) {
+        if (auto target = room_peer(room_mgr, conn->get_room_id(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
                 WsAppParser::build("OFFER",
                     std::to_string(conn->fd_), msg.param(1)))});
@@ -404,8 +417,7 @@ WsAppRouter::WsAppRouter() {
                     << " for param '" << msg.param(0) << "'" << std::endl;
             return results;
         }
-        auto room = room_mgr.get_or_create(conn->get_room_id());
-        if (auto target = find_connection(room->get_live_connections(), target_fd)) {
+        if (auto target = room_peer(room_mgr, conn->get_room_id(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
                 WsAppParser::build("ANSWER",
                     std::to_string(conn->fd_), msg.param(1)))});
@@ -431,8 +443,7 @@ WsAppRouter::WsAppRouter() {
                     << " for param '" << msg.param(0) << "'" << std::endl;
             return results;
         }
-        auto room = room_mgr.get_or_create(conn->get_room_id());
-        if (auto target = find_connection(room->get_live_connections(), target_fd)) {
+        if (auto target = room_peer(room_mgr, conn->get_room_id(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
                 WsAppParser::build("ICE",
                     std::to_string(conn->fd_), msg.param(1)))});
@@ -461,8 +472,7 @@ WsAppRouter::WsAppRouter() {
                     << " for param '" << msg.param(0) << "'" << std::endl;
             return results;
         }
-        auto room = room_mgr.get_or_create(conn->get_room_id());
-        if (auto target = find_connection(room->get_live_connections(), target_fd)) {
+        if (auto target = room_peer(room_mgr, conn->get_room_id(), target_fd)) {
             results.push_back({target, WsFrame::build(WsOpcode::TEXT,
                 WsAppParser::build("MEDIA",
                     std::to_string(conn->fd_), msg.param(1), msg.param(2)))});

@@ -65,9 +65,8 @@ void Acceptor::accept_connections(int listenfd, NewConnectionFn on_new_connectio
     socklen_t client_len = sizeof(client_addr);
 
     while (true) {
-        if (int clientfd = accept(listenfd, (struct sockaddr*)&client_addr, &client_len);
-                clientfd < 0) {
-
+        int clientfd = accept(listenfd, (struct sockaddr*)&client_addr, &client_len);
+        if (clientfd < 0) {
             if (errno == EAGAIN) {
                 break;
             }

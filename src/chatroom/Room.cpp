@@ -6,7 +6,7 @@
 // ==================== Room ====================
 
 void Room::add_num(const std::shared_ptr<Connection>& conn) {
-    std::lock_guard<std::mutex> lock(this->mtx_);
+    std::unique_lock<std::shared_mutex> lock(this->mtx_);
     // 清理过期弱引用
     this->connections_.erase(
         std::remove_if(this->connections_.begin(), this->connections_.end(),
@@ -16,7 +16,7 @@ void Room::add_num(const std::shared_ptr<Connection>& conn) {
 }
 
 void Room::del_num(const std::shared_ptr<Connection>& conn) {
-    std::lock_guard<std::mutex> lock(this->mtx_);
+    std::unique_lock<std::shared_mutex> lock(this->mtx_);
     this->connections_.erase(
         std::remove_if(this->connections_.begin(), this->connections_.end(),
             [&conn](const std::weak_ptr<Connection>& wp) {
@@ -27,7 +27,8 @@ void Room::del_num(const std::shared_ptr<Connection>& conn) {
 }
 
 std::vector<std::shared_ptr<Connection>> Room::get_live_connections() {
-    std::lock_guard<std::mutex> lock(this->mtx_);
+    // 读多写少 广播并发读共享锁
+    std::shared_lock<std::shared_mutex> lock(this->mtx_);
     std::vector<std::shared_ptr<Connection>> live;
     for (auto& wp : this->connections_) {
         if (auto sp = wp.lock()) {
@@ -40,30 +41,50 @@ std::vector<std::shared_ptr<Connection>> Room::get_live_connections() {
 // ==================== RoomManager ====================
 
 std::shared_ptr<Room> RoomManager::get_or_create(const std::string& room_id) {
-    std::lock_guard<std::mutex> lock(this->mtx_);
-    auto it = this->rooms_.find(room_id);
-    if (it != this->rooms_.end()) {
-        return it->second;
+    {
+        std::shared_lock lock(this->mtx_);
+        auto it = this->rooms_.find(room_id);
+        if (it != this->rooms_.end()) {
+            return it->second;
+        }
     }
+    // 共享锁未命中 先造房间再唯一锁双检插入 防共享锁释放期间另一线程已插入
     auto room = std::make_shared<Room>();
-    this->rooms_[room_id] = room;
-    return room;
+    {
+        std::unique_lock lock(this->mtx_);
+        auto it = this->rooms_.find(room_id);
+        if (it != this->rooms_.end()) {
+            return it->second;
+        }
+        this->rooms_[room_id] = room;
+        return room;
+    }
 }
+
 std::vector<std::shared_ptr<Connection>> RoomManager::leave_room(
     const std::string& room_id,
     const std::shared_ptr<Connection>& conn) {
-    std::lock_guard<std::mutex> lock(this->mtx_);
-
-    auto it = this->rooms_.find(room_id);
-    if (it == this->rooms_.end()) {
-        return {};
+    // 共享锁只取房间引用 房间操作在房间自身锁内进行 不在管理器锁上停留
+    std::shared_ptr<Room> room;
+    {
+        std::shared_lock lock(this->mtx_);
+        auto it = this->rooms_.find(room_id);
+        if (it == this->rooms_.end()) {
+            return {};
+        }
+        room = it->second;
     }
-    
-    it->second->del_num(conn);
 
-    auto live = it->second->get_live_connections();
+    room->del_num(conn);
+    auto live = room->get_live_connections();
+    // 房间空则回收 唯一锁下复查 防等待期间新成员加入或房间已被重建导致误删
     if (live.empty()) {
-        this->rooms_.erase(it);
+        std::unique_lock lock(this->mtx_);
+        auto it = this->rooms_.find(room_id);
+        if (it != this->rooms_.end() && it->second == room &&
+            it->second->get_live_connections().empty()) {
+            this->rooms_.erase(it);
+        }
     }
     return live;
 }

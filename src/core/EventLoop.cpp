@@ -5,6 +5,9 @@
 #include <cstdio>
 #include <thread>
 
+// 当前线程正在运行的事件循环 loop 入口登记 发送路由据此判断本地直投还是跨线程投递
+static thread_local EventLoop* t_loop = nullptr;
+
 // 构造函数什么都不做，真正的初始化工作由 init 函数完成
 // 在容器初始化完毕后再调用 init
 EventLoop::EventLoop() {}
@@ -39,6 +42,7 @@ bool EventLoop::init() {
 
 // 事件循环主函数
 void EventLoop::loop() {
+    t_loop = this;
     std::vector<epoll_event> evs(MAX_EVENTS);
 
     while (!this->quit_) {
@@ -64,18 +68,21 @@ void EventLoop::loop() {
             auto write_cb = it->second.write_cb_;
             auto err_cb = it->second.err_cb_;
 
-            if (flags & EPOLLERR) {
-                if (err_cb) err_cb();
-                continue;
-            }
+            // 读优先 干净关闭以 EPOLLIN 呈现 recv 返回 0 即关闭
             if (flags & EPOLLIN && read_cb) {
                 read_cb();
             }
-            if (flags & EPOLLOUT && write_cb) {
+            // 对端挂断 EPOLLHUP 连接错误 EPOLLERR 都走关闭回调
+            // 读路径已关闭连接时 fd 已摘除 用 event_map_ 判活避免重复清理
+            if (flags & (EPOLLERR | EPOLLHUP) && err_cb && this->event_map_.count(fd)) {
+                err_cb();
+            }
+            if (flags & EPOLLOUT && write_cb && this->event_map_.count(fd)) {
                 write_cb();
             }
         }
     }
+    t_loop = nullptr;
 }
 
 // 设置退出标志并唤醒 epoll_wait
@@ -114,6 +121,11 @@ void EventLoop::mod_event(int fd, uint32_t events) {
     epoll_ctl(this->epollfd_, EPOLL_CTL_MOD, fd, &ev);
 }
 
+// 判断当前线程是否本事件循环线程
+bool EventLoop::is_in_loop_thread() const {
+    return t_loop == this;
+}
+
 // 线程池通过这个函数把活投回 IO 线程
 void EventLoop::run_in_loop(std::function<void()> cb) {
     {
@@ -125,6 +137,10 @@ void EventLoop::run_in_loop(std::function<void()> cb) {
 
 // 写入 eventfd 来唤醒 epoll_wait
 void EventLoop::wakeup() {
+    // init 前或 init 失败时 eventfd_ 为 -1 信号早到路径直接跳过避免 EBADF 噪音
+    if (this->eventfd_ < 0) {
+        return;
+    }
     uint64_t x = 1;
     if (write(this->eventfd_, &x, sizeof(x)) < 0) {
         perror("write eventfd");

@@ -1,4 +1,4 @@
-// 写调度器 — 响应发送队列和部分发送管理
+// 写引擎 — 本 loop 响应发送队列和部分发送管理
 #include "conn/WriteScheduler.h"
 #include "core/EventLoop.h"
 
@@ -10,27 +10,43 @@
 WriteScheduler::WriteScheduler(EventLoop& loop, DelConnectionFn del_conn)
     : loop_(loop), del_connection_(std::move(del_conn)) {}
 
-void WriteScheduler::push_response(const std::shared_ptr<Connection>& conn,
-                                   std::string data, bool is_high_priority) {
+// 入队高/低队列后立即排空 只由归属线程调用 Connection::send 保证
+void WriteScheduler::enqueue(const std::shared_ptr<Connection>& conn,
+                             std::string data, bool is_high_priority) {
     if (is_high_priority) {
         this->queue_high_.emplace(PendingResponse{conn, std::move(data)});
-    } 
+    }
     else {
         this->queue_low_.emplace(PendingResponse{conn, std::move(data)});
     }
+    this->drain_all();
 }
 
-void WriteScheduler::flush_responses() {
-    // 防止递归调用死锁
-    if (this->flushing_) {
-        return;
+// 高优先 TEXT 先于低优先 BINARY 排空
+void WriteScheduler::drain_all() {
+    this->drain_one(this->queue_high_);
+    this->drain_one(this->queue_low_);
+}
+
+// 发送循环 返回 已发送量 与 是否硬错误 遇 EAGAIN 中断不算硬错误
+std::pair<ssize_t, bool> WriteScheduler::try_send(int fd, std::string_view view) {
+    ssize_t sent = 0;
+    while (sent < static_cast<ssize_t>(view.size())) {
+        ssize_t n = send(fd, view.data() + sent, view.size() - sent, 0);
+        if (n > 0) {
+            sent += n;
+        }
+        else if (n < 0 && errno == EAGAIN) {
+            break;
+        }
+        else {
+            if (errno != EPIPE) {
+                perror("send");
+            }
+            return {sent, true};
+        }
     }
-    else{
-        this->flushing_ = true;
-        this->drain_one(this->queue_high_);
-        this->drain_one(this->queue_low_);
-        this->flushing_ = false;
-    }
+    return {sent, false};
 }
 
 void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
@@ -56,96 +72,50 @@ void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
         }
 
         std::string& wire = item.data_;
-        ssize_t total = static_cast<ssize_t>(wire.size());
-        ssize_t sent = 0;
+        auto [sent, failed] = this->try_send(fd, wire);
 
-        while (sent < total) {
-            if (ssize_t n = send(fd, wire.data() + sent, total - sent, 0);
-                        n > 0) {
-                sent += n;
-            }
-            else if (n == 0) {
-                perror("send: 合法失败");
-                break;
-            }
-            else {
-                if (errno == EAGAIN) {
-                    break;
-                }
-                else if (errno == EPIPE) {
-                    item.conn_->pending_close_ = true;
-                    sent = total;
-                }
-                else {
-                    perror("send");
-                    item.conn_->pending_close_ = true;
-                    sent = total;
-                }
-            }
+        if (failed) {
+            // 出错 标记关闭 收尾交给下方统一判断
+            item.conn_->pending_close_ = true;
         }
-
-        if (sent >= total) {
-            // 发送完且存在关闭信号则断开连接
-            if (item.conn_->pending_close_) {
-                this->del_connection_(item.conn_);
-            }
-        }
-        // 没发完的连接注册写事件 未发段直接追加进待写缓冲
-        else {
-            this->pending_writes_[item.conn_].append(wire.data() + sent, wire.size() - sent);
+        // 没发完 未发段进待写缓冲 注册写事件
+        else if (sent < static_cast<ssize_t>(wire.size())) {
+            this->pending_writes_[item.conn_].append(
+                wire.data() + sent, wire.size() - sent);
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET | EPOLLOUT);
-            // 立即尝试冲刷，防止ET饥饿
+            // 立即尝试冲刷防 ET 饥饿
             this->handle_write(item.conn_);
+            continue;
+        }
+        // 发完或出错 存在关闭信号则断开
+        if (item.conn_->pending_close_) {
+            this->del_connection_(item.conn_);
         }
     }
 }
 
 void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
     int fd = conn->fd_;
-
     auto it = this->pending_writes_.find(conn);
     if (it == this->pending_writes_.end()) {
         return;
     }
     LazyBuffer& buf = it->second;
-    ssize_t total = static_cast<ssize_t>(buf.size());
-    ssize_t sent = 0;
+    auto [sent, failed] = this->try_send(fd, std::string_view(buf.data(), buf.size()));
 
-    while (sent < total) {
-        if (ssize_t n = send(fd, buf.data() + sent, total - sent, 0);
-                    n > 0) {
-            sent += n;
-        }
-        else if (n == 0) {
-            perror("send: 合法失败");
-            break;
-        }
-        else {
-            if (errno == EAGAIN) {
-                break;
-            }
-            else if (errno == EPIPE) {
-                this->pending_writes_.erase(conn);
-                this->del_connection_(conn);
-                return;
-            }
-            else {
-                perror("send");
-                this->pending_writes_.erase(conn);
-                this->del_connection_(conn);
-                return;
-            }
-        }
+    if (failed) {
+        this->pending_writes_.erase(conn);
+        this->del_connection_(conn);
+        return;
     }
 
-    if (sent >= total) {
+    if (sent >= static_cast<ssize_t>(buf.size())) {
         this->pending_writes_.erase(conn);
         // 连接还存活才删除写事件
         if (conn->alive_) {
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET);
         }
-        // 连接可写了，处理之前因 EAGAIN 被重入队列的消息
-        this->flush_responses();
+        // 发完新消息入队即排空 此处无待发消息无需再冲刷
         if (conn->pending_close_) {
             this->del_connection_(conn);
         }

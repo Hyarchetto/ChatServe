@@ -31,8 +31,8 @@ public:
     // 创建 epoll 和 eventfd
     bool init();
 
-    // 内部 Acceptor 监听端口 accept 到的 fd 走 fd_handler_
-    void start_listen(int port);
+    // 内部 Acceptor 监听端口 accept 到的 fd 走 fd_handler_ 成功返回 true
+    bool start_listen(int port);
 
     // 从属入口 网关投递新连接 fd 内部切到本事件循环执行
     void add_connection(int fd);

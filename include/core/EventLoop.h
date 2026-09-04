@@ -24,7 +24,6 @@ public:
     // ==================== 工作接口 ====================
 
     // 创建 epoll 句柄和 eventfd，把 eventfd 注册到 epoll 中
-    // 必须在调用 loop 之前调用
     bool init();
 
     // 事件循环主函数
@@ -50,13 +49,15 @@ public:
     void del_event(int fd);
 
     // 修改一个 fd 在 epoll 中的监听事件
-    // 比如从只读改成读写，或去掉写事件
     void mod_event(int fd, uint32_t events);
 
     // ==================== 跨线程任务投递 ====================
 
+    // 当前线程是否是本事件循环线程
+    // loop 入口把本对象登记到线程局部 发送路由据此判断本地直投还是跨线程投递
+    bool is_in_loop_thread() const;
+
     // 把一个回调扔到 IO 线程去执行
-    // 加锁入队然后 eventfd 叫醒 epoll_wait
     void run_in_loop(std::function<void()> cb);
 
     // 写入 eventfd 来唤醒 epoll_wait 使之立刻返回

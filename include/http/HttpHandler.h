@@ -10,11 +10,10 @@
 #include "../core/EventLoop.h"
 #include "../core/ThreadPool.h"
 #include "HttpRouter.h"
-#include "../conn/WriteScheduler.h"
 
 class HttpHandler {
 public:
-    HttpHandler(EventLoop& loop, ThreadPool& works, WriteScheduler& writer);
+    HttpHandler(EventLoop& loop, ThreadPool& works);
 
     void handle_http(const std::shared_ptr<Connection>& conn);
 
@@ -23,5 +22,4 @@ private:
     ThreadPool& works_;
     // 路由只被本类消费 内部持有 路由表构造时固定 运行期只读
     HttpRouter http_router_;
-    WriteScheduler& writer_;
 };

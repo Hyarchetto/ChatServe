@@ -16,10 +16,12 @@ add_library(chat_common STATIC
     chatroom/Room.cpp
     chatroom/TransferManager.cpp
     conn/ConnHandler.cpp
+    conn/Connection.cpp
     conn/WriteScheduler.cpp
     server/Reactor.cpp
     server/ReactorFactory.cpp
     server/Acceptor.cpp
+    server/Gateway.cpp
 )
 
 target_include_directories(chat_common PUBLIC ${CMAKE_SOURCE_DIR}/include)

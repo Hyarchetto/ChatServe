@@ -142,7 +142,6 @@ ChunkResult TransferManager::handle_chunk_data(const std::string& data) {
     if (ts.pending_acks_.count(off)) {
         return result;
     }
-    std::string chunk_data(data.data() + BINARY_HEADER_SIZE, data_size);
     ts.pending_acks_.insert(off);
     ts.total_received_ += data_size;
 
@@ -152,25 +151,11 @@ ChunkResult TransferManager::handle_chunk_data(const std::string& data) {
     result.offset_ = off;
     result.size_ = data_size;
     result.downloader_ = ts.downloader_;
-    result.data_ = std::move(chunk_data);
 
     // 窗口有空位且还有数据未请求时发送下一个 DWREQ
     result.next_ = this->try_send_next_request(ts);
 
     return result;
-}
-
-// ==================== 分块转发包装 ====================
-
-std::string TransferManager::make_chunk_header(uint64_t session_id, size_t offset,
-                                               size_t size) {
-    std::string header(BINARY_HEADER_SIZE, '\0');
-    std::memcpy(&header[0], &session_id, 8);
-    uint64_t off = offset;
-    std::memcpy(&header[8], &off, 8);
-    uint32_t sz = static_cast<uint32_t>(size);
-    std::memcpy(&header[16], &sz, 4);
-    return header;
 }
 
 // ==================== ACK 处理 ====================

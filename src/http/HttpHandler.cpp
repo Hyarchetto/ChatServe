@@ -7,11 +7,9 @@
 #include "http/ErrorResponse.h"
 #include "http/HttpRouter.h"
 #include "ws/WsUpgradeResponse.h"
-#include "conn/WriteScheduler.h"
 
-HttpHandler::HttpHandler(EventLoop& loop, ThreadPool& works,
-                        WriteScheduler& writer)
-    : loop_(loop), works_(works), writer_(writer) {}
+HttpHandler::HttpHandler(EventLoop& loop, ThreadPool& works)
+    : loop_(loop), works_(works) {}
 
 void HttpHandler::handle_http(const std::shared_ptr<Connection>& conn) {
     while (true) {
@@ -27,8 +25,7 @@ void HttpHandler::handle_http(const std::shared_ptr<Connection>& conn) {
                 auto resp = ErrorResponse::bad_request(result.error_msg_);
                 std::string wire = resp.serialize();
                 conn->pending_close_ = true;
-                this->writer_.push_response(conn, std::move(wire), true);
-                this->writer_.flush_responses();
+                Connection::send(conn, std::move(wire), true);
                 return;
             }
             // 处理 WebSocket 协议升级请求
@@ -43,9 +40,8 @@ void HttpHandler::handle_http(const std::shared_ptr<Connection>& conn) {
                 else{
                     conn->pending_close_ = true;
                 }
-                // 升级成功切换到 WS 模式后交给 WriteScheduler 发送
-                this->writer_.push_response(conn, std::move(wire), true);
-                this->writer_.flush_responses();
+                // 升级成功切换到 WS 模式后经连接发送
+                Connection::send(conn, std::move(wire), true);
                 return;
             }
             // 处理普通的 HTTP 协议
@@ -56,9 +52,8 @@ void HttpHandler::handle_http(const std::shared_ptr<Connection>& conn) {
                     HttpResponse resp = this->http_router_.handle(req);
                     std::string wire = resp.serialize();
                     // 获取响应再线程池将后续的响应工作交给事件循环
-                    this->loop_.run_in_loop([this, conn, wire = std::move(wire)]() {
-                        this->writer_.push_response(conn, std::move(wire), true);
-                        this->writer_.flush_responses();
+                    this->loop_.run_in_loop([conn, wire = std::move(wire)]() mutable {
+                        Connection::send(conn, std::move(wire), true);
                     });
                 });
                 break;

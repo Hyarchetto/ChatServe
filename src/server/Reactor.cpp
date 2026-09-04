@@ -42,20 +42,21 @@ bool Reactor::init() {
 }
 
 // 内部 Acceptor 只提供监听逻辑 事件循环不暴露 由本类把监听 fd 挂入内部 epoll
-void Reactor::start_listen(int port) {
+bool Reactor::start_listen(int port) {
     if (!this->acceptor_) {
         std::cerr<<"Acceptor未创建"<<std::endl;
-        return;
+        return false;
     }
     int listenfd = this->acceptor_->start_listen(port);
     if (listenfd < 0) {
-        return;
+        return false;
     }
     this->loop_.add_event(listenfd, EPOLLIN | EPOLLET,
         [this, listenfd]() {
             this->acceptor_->accept_connections(listenfd,
                 [this](int fd) { this->fd_handler_(fd); });
         });
+    return true;
 }
 
 // 从属入口 网关从其他线程投递 fd 通过 run_in_loop 切到本事件循环执行
