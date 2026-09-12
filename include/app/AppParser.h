@@ -8,11 +8,11 @@
 #include <string>
 #include <vector>
 
-#include "WsAppMessage.h"
+#include "AppMessage.h"
 
-class WsAppParser {
+class AppParser {
 public:
-    static WsAppMessage parse(const std::string& data);
+    static AppMessage parse(const std::string& data);
 
     static std::string build(const std::string& command,
                              const std::vector<std::string>& params);

@@ -10,7 +10,7 @@
 WriteScheduler::WriteScheduler(EventLoop& loop, DelConnectionFn del_conn)
     : loop_(loop), del_connection_(std::move(del_conn)) {}
 
-// 入队高/低队列后立即排空 只由归属线程调用 Connection::send 保证
+// 入队高/低队列后立即排空 只由本 loop 归属线程调用
 void WriteScheduler::enqueue(const std::shared_ptr<Connection>& conn,
                              std::string data, bool is_high_priority) {
     if (is_high_priority) {
@@ -57,9 +57,9 @@ void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
         auto item = std::move(local.front());
         local.pop();
 
-        int fd = item.conn_->fd_;
-        // 连接已从循环拆除则丢弃 alive_ 在 del_connection 与摘除同步置 false
-        if (!item.conn_->alive_) {
+        int fd = item.conn_->sess_->fd_;
+        // 连接已从循环拆除则丢弃 alive 在 io 关闭路径与摘除同步置 false
+        if (!item.conn_->sess_->alive_) {
             continue;
         }
 
@@ -76,7 +76,7 @@ void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
 
         if (failed) {
             // 出错 标记关闭 收尾交给下方统一判断
-            item.conn_->pending_close_ = true;
+            item.conn_->sess_->close_ = true;
         }
         // 没发完 未发段进待写缓冲 注册写事件
         else if (sent < static_cast<ssize_t>(wire.size())) {
@@ -88,14 +88,14 @@ void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
             continue;
         }
         // 发完或出错 存在关闭信号则断开
-        if (item.conn_->pending_close_) {
+        if (item.conn_->sess_->close_) {
             this->del_connection_(item.conn_);
         }
     }
 }
 
 void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
-    int fd = conn->fd_;
+    int fd = conn->sess_->fd_;
     auto it = this->pending_writes_.find(conn);
     if (it == this->pending_writes_.end()) {
         return;
@@ -112,11 +112,11 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
     if (sent >= static_cast<ssize_t>(buf.size())) {
         this->pending_writes_.erase(conn);
         // 连接还存活才删除写事件
-        if (conn->alive_) {
+        if (conn->sess_->alive_) {
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET);
         }
         // 发完新消息入队即排空 此处无待发消息无需再冲刷
-        if (conn->pending_close_) {
+        if (conn->sess_->close_) {
             this->del_connection_(conn);
         }
     }

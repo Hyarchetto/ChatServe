@@ -1,35 +1,37 @@
 // 聊天室 & 房间管理器实现
 
 #include "chatroom/Room.h"
-#include "conn/Connection.h"
+#include "ctrl/Session.h"
+
+#include <algorithm>
 
 // ==================== Room ====================
 
-void Room::add_num(const std::shared_ptr<Connection>& conn) {
+void Room::add_num(const std::shared_ptr<Session>& conn) {
     std::unique_lock<std::shared_mutex> lock(this->mtx_);
     // 清理过期弱引用
     this->connections_.erase(
         std::remove_if(this->connections_.begin(), this->connections_.end(),
-            [](const std::weak_ptr<Connection>& wp) { return wp.expired(); }),
+            [](const std::weak_ptr<Session>& wp) { return wp.expired(); }),
         this->connections_.end());
     this->connections_.push_back(conn);
 }
 
-void Room::del_num(const std::shared_ptr<Connection>& conn) {
+void Room::del_num(const std::shared_ptr<Session>& conn) {
     std::unique_lock<std::shared_mutex> lock(this->mtx_);
     this->connections_.erase(
         std::remove_if(this->connections_.begin(), this->connections_.end(),
-            [&conn](const std::weak_ptr<Connection>& wp) {
+            [&conn](const std::weak_ptr<Session>& wp) {
                 auto sp = wp.lock();
                 return !sp || sp == conn;
             }),
         this->connections_.end());
 }
 
-std::vector<std::shared_ptr<Connection>> Room::get_live_connections() {
+std::vector<std::shared_ptr<Session>> Room::get_live_connections() {
     // 读多写少 广播并发读共享锁
     std::shared_lock<std::shared_mutex> lock(this->mtx_);
-    std::vector<std::shared_ptr<Connection>> live;
+    std::vector<std::shared_ptr<Session>> live;
     for (auto& wp : this->connections_) {
         if (auto sp = wp.lock()) {
             live.push_back(sp);
@@ -61,9 +63,9 @@ std::shared_ptr<Room> RoomManager::get_or_create(const std::string& room_id) {
     }
 }
 
-std::vector<std::shared_ptr<Connection>> RoomManager::leave_room(
+std::vector<std::shared_ptr<Session>> RoomManager::leave_room(
     const std::string& room_id,
-    const std::shared_ptr<Connection>& conn) {
+    const std::shared_ptr<Session>& conn) {
     // 共享锁只取房间引用 房间操作在房间自身锁内进行 不在管理器锁上停留
     std::shared_ptr<Room> room;
     {

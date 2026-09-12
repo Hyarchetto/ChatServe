@@ -2,7 +2,7 @@
 // 高优先级 TEXT 帧先于低优先级 BINARY 数据发送
 // 遇到 EAGAIN 时注册 EPOLLOUT 等可写再发
 // 遇到 EPIPE 时回调 del_connection 销毁连接
-// 只处理本 loop 连接的写入 跨 loop 投递由 Connection::send 路由到归属 loop 后入队
+// 只处理本 loop 连接的写入 发送全在本 loop 线程发生 无跨线程投递
 // 每子 loop 一个 主 loop 无连接不建
 #pragma once
 

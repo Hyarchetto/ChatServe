@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <thread>
 
-// 当前线程正在运行的事件循环 loop 入口登记 发送路由据此判断本地直投还是跨线程投递
+// 当前线程正在运行的事件循环 loop 入口登记 邮箱据此判断本地直投还是跨线程投递
 static thread_local EventLoop* t_loop = nullptr;
 
 // 构造函数什么都不做，真正的初始化工作由 init 函数完成
@@ -126,8 +126,8 @@ bool EventLoop::is_in_loop_thread() const {
     return t_loop == this;
 }
 
-// 线程池通过这个函数把活投回 IO 线程
-void EventLoop::run_in_loop(std::function<void()> cb) {
+// 入队后写 eventfd 唤醒 epoll_wait 取件 不判线程 本 loop 线程调也只是入队
+void EventLoop::post(std::function<void()> cb) {
     {
         std::lock_guard<std::mutex> lock(this->mtx_functors_);
         this->pending_functors_.push_back(std::move(cb));

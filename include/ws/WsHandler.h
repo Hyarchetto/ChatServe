@@ -1,34 +1,27 @@
-// WsHandler — WebSocket 协议处理器
-// TEXT 走 WsAppRouter 路由，BINARY 走 TransferManager 滑动窗口转发
-// CLOSE 帧和意外断开时清理传输和房间状态并广播通知
+// WsHandler — WebSocket 协议决策器 纯函数不知 io 也不知连接
+// 吃缓冲区字节 吐一条决策 施加到连接的动作由 io 层完成
+// 分帧委托 WsParser 组帧委托 WsFrame 本层无任何外部依赖
+// 与 HttpHandler 同形 一侧解析分帧 一侧解析路由 各自产出待施加决策
 #pragma once
 
-#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
 
-#include "../conn/Connection.h"
-#include "../core/EventLoop.h"
-#include "../core/ThreadPool.h"
-#include "WsAppRouter.h"
-#include "../chatroom/Room.h"
+#include "WsFragmentState.h"
 
-class TransferManager;
+// 一条 WebSocket 处理决策 由施加侧应用到连接
+struct WsAction {
+    std::vector<std::string> responses_;  // 已组帧线路数据 PONG 与 CLOSE
+    std::vector<std::string> messages_;   // 上行文本 交中控
+    std::vector<std::string> binaries_;   // 上行二进制分块 交中控
+    size_t consumed_ = 0;                 // 已消耗字节 施加侧一次性 consume
+    bool close_ = false;                  // 对端发来 CLOSE 置关闭 写引擎冲刷后执行
+};
 
 class WsHandler {
 public:
-    WsHandler(EventLoop& loop, ThreadPool& works,
-                 RoomManager& room_mgr);
-
-    void handle_ws(const std::shared_ptr<Connection>& conn);
-    // WS 清理 取消传输离开房间并广播
-    void cleanup(const std::shared_ptr<Connection>& conn);
-
-private:
-    // 按房间取文件传输管理器 传输状态归房间 每个房间独立
-    TransferManager& transfer_mgr_of(const std::string& room_id);
-
-    EventLoop& loop_;
-    ThreadPool& works_;
-    // 应用层路由只被本类消费 内部持有 路由表构造时固定 运行期只读
-    WsAppRouter ws_app_router_;
-    RoomManager& room_mgr_;
+    // 分帧并决策缓冲区 返回待施加决策 不碰连接不碰 socket
+    // frag 为连接的续帧状态 由调用方按连接提供
+    WsAction handle(std::string_view buf, WsFragmentState* frag);
 };

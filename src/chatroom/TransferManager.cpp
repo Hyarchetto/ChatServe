@@ -22,7 +22,7 @@ std::string TransferManager::generate_file_id() {
 // ==================== 文件注册 ====================
 
 std::string TransferManager::register_file(const std::string& filename, size_t filesize,
-                                             const std::shared_ptr<Connection>& uploader) {
+                                             const std::shared_ptr<Session>& uploader) {
     std::string file_id = this->generate_file_id();
     std::lock_guard<std::mutex> lock(this->mtx_);
 
@@ -48,7 +48,7 @@ FileRegistration TransferManager::get_registration(const std::string& file_id) {
 void TransferManager::unregister_file_impl(const std::string& file_id) {
     if (auto it = this->registrations_.find(file_id);
              it != this->registrations_.end()) {
-        Connection* uploader = it->second.uploader_.get();
+        Session* uploader = it->second.uploader_.get();
         auto& files = this->uploader_files_[uploader];
         files.erase(std::remove(files.begin(), files.end(), file_id), files.end());
         if (files.empty()){
@@ -61,7 +61,7 @@ void TransferManager::unregister_file_impl(const std::string& file_id) {
 // ==================== 启动传输 ====================
 
 std::vector<NextRequest> TransferManager::start_transfer(
-    const std::string& file_id, const std::shared_ptr<Connection>& downloader,
+    const std::string& file_id, const std::shared_ptr<Session>& downloader,
     size_t start_offset, uint64_t& out_session_id) {
     std::lock_guard<std::mutex> lock(this->mtx_);
     std::vector<NextRequest> requests;
@@ -72,7 +72,7 @@ std::vector<NextRequest> TransferManager::start_transfer(
     if (auto r_it = this->registrations_.find(file_id);
              r_it != this->registrations_.end() && r_it->second.uploader_) {
 
-        std::shared_ptr<Connection> uploader = r_it->second.uploader_;
+        std::shared_ptr<Session> uploader = r_it->second.uploader_;
         size_t filesize = r_it->second.filesize_;
 
         // 创建独立会话
@@ -214,8 +214,8 @@ void TransferManager::cleanup_session_impl(uint64_t session_id) {
     auto s_it = this->sessions_.find(session_id);
     if (s_it == this->sessions_.end()) return;
 
-    Connection* uploader = s_it->second.uploader_.get();
-    Connection* downloader = s_it->second.downloader_.get();
+    Session* uploader = s_it->second.uploader_.get();
+    Session* downloader = s_it->second.downloader_.get();
 
     // 清理 uploader 和 downloader 索引
     this->remove_session_ref(this->uploader_sessions_, uploader, session_id);
@@ -226,8 +226,8 @@ void TransferManager::cleanup_session_impl(uint64_t session_id) {
 
 // 从连接索引中移除会话 id，空则删该条
 void TransferManager::remove_session_ref(
-    std::unordered_map<Connection*, std::vector<uint64_t>>& map,
-    Connection* conn, uint64_t session_id) {
+    std::unordered_map<Session*, std::vector<uint64_t>>& map,
+    Session* conn, uint64_t session_id) {
     auto it = map.find(conn);
     if (it == map.end()) {
         return;
@@ -258,7 +258,7 @@ void TransferManager::cancel_session_impl(uint64_t session_id, CancelResult* res
 
 // 锁内按 file_id + 下载方连接 找最新会话 id，找不到返回 nullopt
 std::optional<uint64_t> TransferManager::find_session_id(const std::string& file_id,
-                                                         const Connection* downloader) const {
+                                                         const Session* downloader) const {
     std::optional<uint64_t> found;
     for (const auto& entry : this->sessions_) {
         const TransferSession& ts = entry.second;
@@ -278,7 +278,7 @@ CancelResult TransferManager::cancel_file(const std::string& file_id) {
 
     auto r_it = this->registrations_.find(file_id);
     if (r_it == this->registrations_.end()) return result;
-    Connection* uploader = r_it->second.uploader_.get();
+    Session* uploader = r_it->second.uploader_.get();
 
     // 取消该文件的所有活跃下载会话
     auto u_it = this->uploader_sessions_.find(uploader);
@@ -296,10 +296,10 @@ CancelResult TransferManager::cancel_file(const std::string& file_id) {
     return result;
 }
 
-CancelResult TransferManager::cancel_by_conn(const std::shared_ptr<Connection>& conn) {
+CancelResult TransferManager::cancel_by_conn(const std::shared_ptr<Session>& conn) {
     std::lock_guard<std::mutex> lock(this->mtx_);
     CancelResult result;
-    Connection* key = conn.get();
+    Session* key = conn.get();
 
     // 第一阶段：作为上传方取消，记录受影响下载方
     {
@@ -338,7 +338,7 @@ CancelResult TransferManager::cancel_by_conn(const std::shared_ptr<Connection>& 
 
 // ==================== 下载方会话控制 ====================
 bool TransferManager::cancel_session(const std::string& file_id,
-                                     const std::shared_ptr<Connection>& downloader) {
+                                     const std::shared_ptr<Session>& downloader) {
     std::lock_guard<std::mutex> lock(this->mtx_);
     auto sid = this->find_session_id(file_id, downloader.get());
     if (!sid) {

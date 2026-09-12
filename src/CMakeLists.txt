@@ -9,19 +9,22 @@ add_library(chat_common STATIC
     http/HttpHandler.cpp
     ws/WsParser.cpp
     ws/WsFrame.cpp
-    ws/WsUpgradeResponse.cpp
-    ws/WsAppParser.cpp
-    ws/WsAppRouter.cpp
     ws/WsHandler.cpp
+    ws/WsUpgradeResponse.cpp
+    app/AppParser.cpp
+    app/AppRouter.cpp
+    app/AppChatCommands.cpp
+    app/AppSignalCommands.cpp
+    app/AppTransferCommands.cpp
+    conn/ConnHandler.cpp
+    conn/WriteScheduler.cpp
     chatroom/Room.cpp
     chatroom/TransferManager.cpp
-    conn/ConnHandler.cpp
-    conn/Connection.cpp
-    conn/WriteScheduler.cpp
     server/Reactor.cpp
     server/ReactorFactory.cpp
     server/Acceptor.cpp
     server/Gateway.cpp
+    server/CtrlDispatcher.cpp
 )
 
 target_include_directories(chat_common PUBLIC ${CMAKE_SOURCE_DIR}/include)

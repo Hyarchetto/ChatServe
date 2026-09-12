@@ -18,6 +18,25 @@ static bool icontains(const std::string& haystack, const std::string& needle) {
     return it != haystack.end();
 }
 
+// 请求行与请求头的累计上限 防客户端无限发头撑爆读缓冲
+// 取 64KB 常见浏览器头部不足 8KB 留足余量 与 ws 侧的帧上限对称
+static constexpr size_t kMaxHeaderBytes = 64 * 1024;
+
+// 头部超限 直接判定为错误请求
+static HttpResult header_too_large() {
+    HttpResult result;
+    result.type_ = HttpResultType::BAD_REQUEST;
+    result.error_msg_ = "Header too large";
+    return result;
+}
+
+// 行未终结时缓冲区仍超上限 说明头部在无界增长
+// 只在 read_line 失败时可用 此时缓冲区必然全是尚未终结的头部
+// 若请求本体已到达 头部终结符必然已被读到 不会走到这里
+static bool unterminated_overflow(std::string_view buf) {
+    return buf.size() > kMaxHeaderBytes;
+}
+
 bool HttpParser::read_line(std::string_view buf, size_t& pos, std::string& line) {
     auto n = buf.find("\r\n", pos);
     if (n == std::string::npos) return false;
@@ -34,6 +53,9 @@ HttpResult HttpParser::handle(std::string_view buf) {
     {
         std::string line;
         if (!read_line(buf, pos, line)) {
+            if (unterminated_overflow(buf)) {
+                return header_too_large();
+            }
             return result;  // INCOMPLETE
         }
         if (std::istringstream iss(line); !(iss >> result.request_.method_ >> result.request_.path_ >> result.request_.version_)) {
@@ -51,7 +73,14 @@ HttpResult HttpParser::handle(std::string_view buf) {
     // ==================== 请求头 ====================
     std::string line;
     while (true) {
+        // 行已终结但累计超限 每行都很短也能撑爆
+        if (pos > kMaxHeaderBytes) {
+            return header_too_large();
+        }
         if (!read_line(buf, pos, line)) {
+            if (unterminated_overflow(buf)) {
+                return header_too_large();
+            }
             return result;  // INCOMPLETE
         }
         // 空行 → 头部结束
@@ -107,7 +136,7 @@ HttpResult HttpParser::handle(std::string_view buf) {
         else {
             result.type_ = HttpResultType::OK;
         }
-        result.finished_ = pos;
+        result.consumed_ = pos;
         return result;
     }
 }

@@ -5,7 +5,7 @@
 #include <vector>
 #include <unordered_set>
 
-struct WsAppMessage {
+struct AppMessage {
     std::string command_;                // 命令字，JOIN/MSG/SYS 等，裸文本消息为空
     std::vector<std::string> params_;    // | 分隔的参数列表
     std::string raw_;                    // 原始消息原文

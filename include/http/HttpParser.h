@@ -23,7 +23,7 @@ struct HttpResult {
     HttpResultType type_ = HttpResultType::INCOMPLETE;
     HttpRequest    request_;
     std::string    error_msg_;           // BAD_REQUEST 时描述错误原因
-    size_t         finished_ = 0;        // 已消耗的字节数
+    size_t         consumed_ = 0;        // 已消耗的字节数
 };
 
 // HTTP 解析器

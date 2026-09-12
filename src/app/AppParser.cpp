@@ -1,8 +1,8 @@
 // WebSocket 应用层协议解析器
-#include "ws/WsAppParser.h"
+#include "app/AppParser.h"
 
-WsAppMessage WsAppParser::parse(const std::string& data) {
-    WsAppMessage msg;
+AppMessage AppParser::parse(const std::string& data) {
+    AppMessage msg;
     msg.raw_ = data;
 
     auto pipe = data.find(DELIMITER);
@@ -27,7 +27,7 @@ WsAppMessage WsAppParser::parse(const std::string& data) {
     return msg;
 }
 
-std::string WsAppParser::build(const std::string& command,
+std::string AppParser::build(const std::string& command,
                                       const std::vector<std::string>& params) {
     std::string result = command;
     for (const auto& p : params) {

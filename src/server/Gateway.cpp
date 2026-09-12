@@ -1,4 +1,4 @@
-// Gateway — 主从服务器组装层
+// Gateway — 主从服务器组装层实现
 #include "server/Gateway.h"
 
 #include <unistd.h>
@@ -10,12 +10,12 @@ Gateway::Gateway(std::unique_ptr<Reactor> main,
     for (auto& sub : subs) {
         this->subs_.push_back(SubUnit{std::move(sub), {}});
     }
-    // 主 Reactor 的 fd 去路改为网关分发 子 Reactor 在 create_sub 已绑本地处理
+    // 主 Reactor 的 fd 去路改为网关分发 从属 io Reactor 在 create_sub 已绑本地处理
     this->main_->set_fd_handler([this](int fd) { this->dispatch_fd(fd); });
 }
 
 Gateway::~Gateway() {
-    // 兜底 正常流程 loop 已在返回前收齐子线程
+    // 兜底 正常流程 loop 已在返回前收齐 io 线程
     this->join();
 }
 
@@ -37,13 +37,13 @@ bool Gateway::start_listen(int port) {
 }
 
 void Gateway::loop() {
-    // 进主循环前先拉起子 Reactor 线程 保证 accept 分发 fd 时子 loop 已在跑
+    // 进主循环前先拉起 io Reactor 线程 保证 accept 分发 fd 时 io loop 已在跑
     for (auto& s : this->subs_) {
         s.thread = std::thread([reactor = s.reactor.get()]() { reactor->loop(); });
     }
     // 阻塞到 stop 信号 quit 主 loop
     this->main_->loop();
-    // stop 已把子线程 quit 收齐后再返回 调用方返回后可直接排池
+    // stop 已把 io 线程 quit 收齐后再返回
     this->join();
 }
 
@@ -54,7 +54,7 @@ void Gateway::stop() {
     }
 }
 
-// 等待子 Reactor 线程退出 loop 尾部与析构兜底共用 可重复调用
+// 等待 io Reactor 线程退出 loop 尾部与析构兜底共用 可重复调用
 void Gateway::join() {
     for (auto& s : this->subs_) {
         if (s.thread.joinable()) {
