@@ -4,7 +4,8 @@
 #include <string>
 #include <algorithm>
 
-struct LazyBuffer {
+class LazyBuffer {
+public:
     // 可读连续区 先查 size() 再访问
     const char* data() const { 
         return data_.data() + head_; 

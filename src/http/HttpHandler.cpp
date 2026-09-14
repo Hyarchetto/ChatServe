@@ -22,7 +22,7 @@ HttpAction HttpHandler::handle(std::string_view buf) {
             // 错误的 HTTP 请求可能是网络问题或者网络攻击 直接断开好了
             case HttpResultType::BAD_REQUEST: {
                 action.responses_.push_back(
-                    ErrorResponse::bad_request(result.error_msg_).serialize());
+                    ErrorResponse::build_bad_request(result.error_msg_).serialize());
                 action.close_ = true;
                 return action;
             }

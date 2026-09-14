@@ -9,7 +9,7 @@
 #include <functional>
 #include <future>
 #include <atomic>
-#include <iostream>
+#include <stdexcept>
 
 class ThreadPool {
 public:
@@ -33,6 +33,8 @@ public:
     size_t get_thread_num() const;
     size_t task_count() const;
     bool is_running() const;
+    // 等当前队列与在途任务做完
+    // 池已停止时 worker 都退了，不会再有人唤醒等待方，直接返回
     void wait_all();
 
 private:
@@ -41,7 +43,7 @@ private:
     mutable std::mutex queue_mutex_;
     std::condition_variable condition_;
 
-    static constexpr int max_task_num_ = 1024;
+    static constexpr int kMaxTaskNum = 1024;
     std::atomic<bool> stop_{false};
     size_t active_tasks_{0};
 
@@ -67,7 +69,7 @@ std::future<typename std::invoke_result_t<F, Args...>> ThreadPool::submit(F&& f,
             throw std::runtime_error("线程池已失效");
         }
 
-        if (this->tasks_.size() < this->max_task_num_) {
+        if (this->tasks_.size() < this->kMaxTaskNum) {
             this->tasks_.emplace([task = std::move(task)]() mutable { (*task)(); });
         } 
         else {
@@ -91,7 +93,7 @@ bool ThreadPool::try_submit(F&& f, Args&&... args) {
 
     {
         std::unique_lock<std::mutex> lock(this->queue_mutex_);
-        if (this->stop_.load(std::memory_order_acquire) || this->tasks_.size() >= this->max_task_num_) {
+        if (this->stop_.load(std::memory_order_acquire) || this->tasks_.size() >= this->kMaxTaskNum) {
             return false;
         }
         this->tasks_.emplace([task = std::move(task)]() mutable { (*task)(); });

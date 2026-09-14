@@ -199,24 +199,23 @@ export function useWebRTC({ sendCommand, myId, myNick, memberList, addSystemMess
     return pc
   }
 
-  // 与房间成员建立 P2P 连接 已连接跳过 id 较小的发 offer 避免 glare
-  function sendOffersToAll() {
-    for (const m of memberList.value) {
-      if (m.id === myId.value || peers[m.id]) continue
-      if (Number(myId.value) >= Number(m.id)) continue
-      const pc = createPC(m.id)
-      addMyTracksToPC(pc)
-      notifyMediaState(m.id)
-      ;(async () => {
-        try {
-          const offer = await pc.createOffer()
-          await pc.setLocalDescription(offer)
-          sendCommand('OFFER|' + m.id + '|' + btoa(offer.sdp))
-        } catch (e) {
-          addSystemMessage('❌ 与 ' + (m.nick || m.id) + ' 建立连接失败')
-        }
-      })()
-    }
+  // 向某个成员发起 P2P 连接 已连过则跳过
+  // 只有看见对方 JOIN 的一方调用，后进房间的人一律被动等别人来连
+  function connectTo(peerId) {
+    if (peerId === myId.value || peers[peerId]) return
+    const peer = memberList.value.find(m => m.id === peerId)
+    const pc = createPC(peerId)
+    addMyTracksToPC(pc)
+    notifyMediaState(peerId)
+    ;(async () => {
+      try {
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        sendCommand('OFFER|' + peerId + '|' + btoa(offer.sdp))
+      } catch (e) {
+        addSystemMessage('❌ 与 ' + ((peer && peer.nick) || peerId) + ' 建立连接失败')
+      }
+    })()
   }
 
   async function startMyMedia(opts) {
@@ -356,5 +355,5 @@ export function useWebRTC({ sendCommand, myId, myNick, memberList, addSystemMess
     p.mediaState[kind] = state
   }
 
-  return { peers, myStream, camOn, micOn, micGain, micLive, volume, volumeLive, setMicGain, toggleMic, toggleVolume, sendOffersToAll, toggleMedia, handleOffer, handleAnswer, handleIce, handleMedia, removePeer, hangupAll }
+  return { peers, myStream, camOn, micOn, micGain, micLive, volume, volumeLive, setMicGain, toggleMic, toggleVolume, connectTo, toggleMedia, handleOffer, handleAnswer, handleIce, handleMedia, removePeer, hangupAll }
 }

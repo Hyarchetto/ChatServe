@@ -122,6 +122,8 @@ export function useChat() {
       const joinerId = data.split('|')[1]
       const joiner = memberList.value.find(m => m.id === joinerId)
       if (joiner) addSystemMessage(joiner.nick + ' 加入房间')
+      // 看见 JOIN 就主动去连 后进房间的人只收 MEMBERS 不建连
+      rtc.connectTo(joinerId)
     } else if (data.startsWith('MEMBERS|')) {
       const raw = data.substring(8)
       memberList.value = raw
@@ -130,7 +132,6 @@ export function useChat() {
             return sep > 0 ? { id: p.substring(0, sep), nick: p.substring(sep + 1) } : { id: p, nick: p }
           })
         : []
-      rtc.sendOffersToAll()
     }
 
     // ---- WebRTC 信令 ----

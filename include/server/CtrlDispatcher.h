@@ -2,9 +2,9 @@
 // 分层单向解耦：
 //   业务线程池不知道 io 线程存在 只按 Session 控制块算响应 整批交还中控线程
 //   中控不持会话表 归属 io 随 Session 自带 分发时直接读 放进对应 io 频道并唤醒
-//   io 线程只管 socket 生命周期 用 Connection->session 上报 排空自己频道写自己连接
-// 业务逻辑集中在 AppRouter(命令表) + RoomManager(房间) 均复用已验证算法
-// 命令经单飞门(同一 Session 至多一条在池)保证顺序 业务持单把锁串行房间操作
+//   io 线程只管 socket 生命周期 用 Connection->sess_ 上报 排空自己频道写自己连接
+// 业务逻辑集中在 AppRouter 命令表 与 RoomManager 房间 均复用已验证算法
+// 命令经单飞门保证顺序 同一 Session 至多一条在池 业务持单把锁串行房间操作
 #pragma once
 
 #include <deque>
@@ -52,9 +52,9 @@ public:
 private:
     // 一条待处理的上行 携带会话保活
     struct Cmd {
-        std::shared_ptr<Session> sess_;     // 会话 持引用让队列中的待办不被释放
-        bool binary_ = false;               // 是否为二进制分块
-        std::string data_;                  // 应用原文或分块原始字节
+        std::shared_ptr<Session> sess_;             // 会话 持引用让队列中的待办不被释放
+        bool binary_ = false;                       // 是否为二进制分块
+        std::string data_;                          // 应用原文或分块原始字节
     };
 
     // 收件箱 sink 只在中控线程执行
@@ -80,10 +80,10 @@ private:
     // 唯一分发点 只中控线程调用 按帧目标会话自带的归属 io 放进对应频道
     void dispatch(std::vector<CtrlDown> frames);
 
-    ThreadPool& works_;               // 业务线程池 工厂持有
+    ThreadPool& works_;                             // 业务线程池 工厂持有
     EventLoop loop_;
-    std::unique_ptr<Inbox> inbox_;    // io→中控
-    std::vector<Outbox*> outboxes_;   // 中控→io 索引即 io 序号 start 前固定
+    std::unique_ptr<Inbox> inbox_;                  // io→中控
+    std::vector<Outbox*> outboxes_;                 // 中控→io 索引即 io 序号 start 前固定
     std::thread thread_;
     bool started_ = false;
 
@@ -92,7 +92,8 @@ private:
     std::unordered_set<Session*> running_;                               // Session 在途标记
 
     // 业务层 复用已验证算法 房间/传输/命令逻辑不在此重复
-    AppRouter app_router_;            // 命令表与业务 handler
-    RoomManager room_mgr_;            // 房间与房间内传输管理器
-    mutable std::shared_mutex mtx_;   // 业务串行门 房间与身份一致性的唯一入口
+    // room_mgr_ 必须排在 app_router_ 之前 后者构造时按引用绑定它 声明序即析构逆序
+    RoomManager room_mgr_;                          // 房间与房间内传输管理器
+    AppRouter app_router_;                          // 命令表与业务 handler 持 room_mgr_ 引用
+    mutable std::shared_mutex mtx_;                 // 业务串行门 房间与身份一致性的唯一入口
 };

@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <string>
 
 class SHA1 {
 public:

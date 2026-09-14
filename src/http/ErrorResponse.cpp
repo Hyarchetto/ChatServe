@@ -15,7 +15,7 @@ static std::string escape_html(const std::string& input) {
     return out;
 }
 
-static HttpResponse make_error_page(int code, const std::string& text, const std::string& msg) {
+static HttpResponse build_error_page(int code, const std::string& text, const std::string& msg) {
     HttpResponse resp;
     resp.status_ = code;
     resp.status_text_ = text;
@@ -25,16 +25,20 @@ static HttpResponse make_error_page(int code, const std::string& text, const std
     return resp;
 }
 
-HttpResponse ErrorResponse::not_found(const std::string& path) {
+HttpResponse ErrorResponse::build_not_found(const std::string& path) {
     std::string msg = "路径 " + path + " 未找到";
-    return make_error_page(404, "Not Found", msg);
+    return build_error_page(404, "Not Found", msg);
 }
 
-HttpResponse ErrorResponse::bad_request(const std::string& msg) {
-    return make_error_page(400, "Bad Request", msg);
+HttpResponse ErrorResponse::build_bad_request(const std::string& msg) {
+    return build_error_page(400, "Bad Request", msg);
 }
 
-HttpResponse ErrorResponse::server_error(const std::string& msg) {
-    return make_error_page(500, "Internal Server Error", msg);
+HttpResponse ErrorResponse::build_payload_too_large(const std::string& msg) {
+    return build_error_page(413, "Payload Too Large", msg);
+}
+
+HttpResponse ErrorResponse::build_server_error(const std::string& msg) {
+    return build_error_page(500, "Internal Server Error", msg);
 }
 

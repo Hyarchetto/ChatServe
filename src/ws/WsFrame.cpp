@@ -1,15 +1,7 @@
 // WebSocket 帧构造 — RFC 6455
 // 本文件只做一件事：将应用数据封装为 WebSocket 线路帧
-#include <cstring>
 
 #include "ws/WsFrame.h"
-
-// WebSocket 掩码异或
-void WsFrame::apply_mask(uint8_t* data, size_t len, const uint8_t mask[4]) {
-    for (size_t i = 0; i < len; ++i) {
-        data[i] ^= mask[i % 4];
-    }
-}
 
 // ==================== 帧构造 ====================
 
@@ -51,4 +43,11 @@ std::string WsFrame::build_from_parts(WsOpcode opcode,
     frame.append(reinterpret_cast<char*>(header), header_len);
     for (auto part : parts) frame.append(part.data(), part.size());
     return frame;
+}
+
+// WebSocket 掩码异或
+void WsFrame::apply_mask(uint8_t* data, size_t len, const uint8_t mask[4]) {
+    for (size_t i = 0; i < len; ++i) {
+        data[i] ^= mask[i % 4];
+    }
 }

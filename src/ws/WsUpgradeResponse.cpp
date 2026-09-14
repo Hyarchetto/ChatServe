@@ -2,22 +2,18 @@
 // 只做一件事：根据 HTTP Upgrade 请求构建 101 Switching Protocols 响应
 #include "ws/WsUpgradeResponse.h"
 #include "ws/SHA1.h"
+#include "http/ErrorResponse.h"
 
 // ==================== 握手升级响应 ====================
 
 HttpResponse WsUpgradeResponse::build(const HttpRequest& req) {
-    std::string key = req.header("Sec-WebSocket-Key");
-    if (key.empty()) {
-        HttpResponse resp;
-        resp.status_ = 400;
-        resp.status_text_ = "Bad Request";
-        resp.headers_["Content-Type"] = "text/html; charset=utf-8";
-        resp.body_ = "<html><body><h1>400 Bad Request</h1><p>Missing Sec-WebSocket-Key</p></body></html>";
-        return resp;
+    auto key = req.find_header("Sec-WebSocket-Key");
+    if (!key) {
+        return ErrorResponse::build_bad_request("Missing Sec-WebSocket-Key");
     }
 
     // RFC 6455 §4.2.2 含 Errata: SHA1 key + magic GUID 结果 base64 编码
-    std::string combined = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    std::string combined = *key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     uint8_t hash[20];
     SHA1::hash(reinterpret_cast<const uint8_t*>(combined.data()), combined.size(), hash);
 

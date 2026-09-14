@@ -8,7 +8,8 @@
 
 class ErrorResponse {
 public:
-    static HttpResponse not_found(const std::string& path = "");
-    static HttpResponse bad_request(const std::string& msg);
-    static HttpResponse server_error(const std::string& msg);
+    static HttpResponse build_not_found(const std::string& path = "");
+    static HttpResponse build_bad_request(const std::string& msg);
+    static HttpResponse build_payload_too_large(const std::string& msg);
+    static HttpResponse build_server_error(const std::string& msg);
 };

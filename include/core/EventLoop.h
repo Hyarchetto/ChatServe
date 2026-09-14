@@ -12,10 +12,6 @@
 #include <mutex>
 #include <cstdint>
 
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <unistd.h>
-
 class EventLoop {
 public:
     // 构造时不做任何事情，真正的初始化在 init 中完成
@@ -41,7 +37,8 @@ public:
     // read_cb  为读事件回调
     // write_cb 为写事件回调
     // err_cb   为错误事件回调
-    void add_event(int fd, uint32_t events,
+    // 注册失败返回 false，此时不保留回调，调用方据此关连接
+    bool add_event(int fd, uint32_t events,
                    std::function<void()> read_cb = nullptr,
                    std::function<void()> write_cb = nullptr,
                    std::function<void()> err_cb = nullptr);
@@ -50,7 +47,8 @@ public:
     void del_event(int fd);
 
     // 修改一个 fd 在 epoll 中的监听事件
-    void mod_event(int fd, uint32_t events);
+    // 失败返回 false，ET 下写事件没挂上去就是永久饥饿，调用方据此关连接
+    bool mod_event(int fd, uint32_t events);
 
     // ==================== 跨线程任务投递 ====================
 
@@ -65,7 +63,6 @@ public:
 
     // 写入 eventfd 来唤醒 epoll_wait 使之立刻返回
     void wakeup();
-
 
 private:
     int epollfd_ = -1;           // epoll 实例的文件描述符
@@ -95,5 +92,5 @@ private:
     // 把 pending_functors_ 中的回调全部取出并执行
     void do_pending_functors();
 
-    static constexpr int MAX_EVENTS = 1024;
+    static constexpr int kMaxEvents = 1024;
 };

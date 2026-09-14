@@ -27,6 +27,5 @@ public:
     WsParser() = default;
 
     // 解析缓冲区，返回解析结果，可能有多条消息
-    static WsResult handle(std::string_view buffer,
-                                        WsFragmentState* frag);
+    static WsResult handle(std::string_view buf, WsFragmentState* frag);
 };

@@ -2,8 +2,13 @@
 // 把 EventLoop 作为成员变量嵌入Reactor
 #include "core/EventLoop.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <thread>
+
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 
 // 当前线程正在运行的事件循环 loop 入口登记 邮箱据此判断本地直投还是跨线程投递
 static thread_local EventLoop* t_loop = nullptr;
@@ -43,10 +48,10 @@ bool EventLoop::init() {
 // 事件循环主函数
 void EventLoop::loop() {
     t_loop = this;
-    std::vector<epoll_event> evs(MAX_EVENTS);
+    std::vector<epoll_event> evs(kMaxEvents);
 
     while (!this->quit_) {
-        int n = epoll_wait(this->epollfd_, evs.data(), MAX_EVENTS, -1);
+        int n = epoll_wait(this->epollfd_, evs.data(), kMaxEvents, -1);
         // epoll error 处理
         if (n < 0) {
             if (errno != EINTR){
@@ -93,7 +98,8 @@ void EventLoop::quit() {
 }
 
 // 把一个句柄及其回调注册到 epoll 中
-void EventLoop::add_event(int fd, uint32_t events,
+// 先挂进 epoll 再留回调，挂失败就什么都不留，避免留下收不到事件的空转条目
+bool EventLoop::add_event(int fd, uint32_t events,
                           std::function<void()> read_cb,
                           std::function<void()> write_cb,
                           std::function<void()> err_cb) {
@@ -101,24 +107,35 @@ void EventLoop::add_event(int fd, uint32_t events,
     ev.data.fd = fd;
     ev.events = events;
 
-    this->event_map_.insert({fd, {std::move(read_cb),
-                                  std::move(write_cb),
-                                  std::move(err_cb)}});
-    epoll_ctl(this->epollfd_, EPOLL_CTL_ADD, fd, &ev);
+    if (epoll_ctl(this->epollfd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        perror("epoll_ctl ADD");
+        return false;
+    }
+    this->event_map_.insert_or_assign(fd, EventCallbacks{std::move(read_cb),
+                                                         std::move(write_cb),
+                                                         std::move(err_cb)});
+    return true;
 }
 
 // 删除一个句柄的监听
+// 去掉监听失败说明 epoll 里本就没有该 fd，忽略即可，回调必须摘掉
 void EventLoop::del_event(int fd) {
     this->event_map_.erase(fd);
-    epoll_ctl(this->epollfd_, EPOLL_CTL_DEL, fd, NULL);
+    if (epoll_ctl(this->epollfd_, EPOLL_CTL_DEL, fd, NULL) < 0 && errno != ENOENT) {
+        perror("epoll_ctl DEL");
+    }
 }
 
 // 修改一个句柄在 epoll 中的监听事件
-void EventLoop::mod_event(int fd, uint32_t events) {
+bool EventLoop::mod_event(int fd, uint32_t events) {
     epoll_event ev{};
     ev.data.fd = fd;
     ev.events = events;
-    epoll_ctl(this->epollfd_, EPOLL_CTL_MOD, fd, &ev);
+    if (epoll_ctl(this->epollfd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
+        perror("epoll_ctl MOD");
+        return false;
+    }
+    return true;
 }
 
 // 判断当前线程是否本事件循环线程

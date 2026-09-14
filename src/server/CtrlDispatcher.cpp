@@ -7,7 +7,7 @@
 #include "app/AppParser.h"
 #include "app/AppMessage.h"
 
-CtrlDispatcher::CtrlDispatcher(ThreadPool& works) : works_(works) {
+CtrlDispatcher::CtrlDispatcher(ThreadPool& works) : works_(works), app_router_(room_mgr_) {
     // 收件箱 sink 只经中控 loop 触发 构造即绑定 线程启动前投递先进队列
     this->inbox_ = std::make_unique<Inbox>(this->loop_,
         [this](CtrlUp up) { this->handle_uplink(std::move(up)); });
@@ -140,7 +140,7 @@ std::vector<CtrlDown> CtrlDispatcher::route(std::shared_ptr<Session> sess,
     }
     AppMessage msg = AppParser::parse(text);
     std::unique_lock<std::shared_mutex> lock(this->mtx_);
-    return this->app_router_.handle(msg, std::move(sess), this->room_mgr_);
+    return this->app_router_.handle(std::move(sess), msg);
 }
 
 // 处理一个二进制分块 持业务锁执行
@@ -151,7 +151,7 @@ std::vector<CtrlDown> CtrlDispatcher::route_chunk(std::shared_ptr<Session> sess,
         return frames;  // io 已关 弃处理
     }
     std::unique_lock<std::shared_mutex> lock(this->mtx_);
-    return this->app_router_.handle_chunk(std::move(sess), data, this->room_mgr_);
+    return this->app_router_.handle_chunk(std::move(sess), data);
 }
 
 // 连接清理 只中控线程调用 回收单飞门 委托业务清理
@@ -163,7 +163,7 @@ void CtrlDispatcher::cleanup(std::shared_ptr<Session> sess) {
     std::vector<CtrlDown> frames;
     {
         std::unique_lock<std::shared_mutex> lock(this->mtx_);
-        frames = this->app_router_.cleanup(std::move(sess), this->room_mgr_);
+        frames = this->app_router_.cleanup(std::move(sess));
     }
     this->dispatch(std::move(frames));
 }
@@ -177,14 +177,13 @@ void CtrlDispatcher::dispatch(std::vector<CtrlDown> frames) {
     std::vector<std::vector<CtrlDown>> grouped(this->outboxes_.size());
     for (auto& f : frames) {
         const int io = f.sess_->io_;
-        if (!f.sess_->alive_ || io < 0 ||
-            static_cast<size_t>(io) >= grouped.size()) {
-            continue;  // 目标已关闭或归属越界 弃帧
+        if (!f.sess_->alive_) {
+            continue;  // 目标已关闭 弃帧
         }
         grouped[static_cast<size_t>(io)].push_back(std::move(f));
     }
     for (size_t i = 0; i < grouped.size(); ++i) {
-        if (!grouped[i].empty() && this->outboxes_[i]) {
+        if (!grouped[i].empty()) {
             this->outboxes_[i]->post_batch(std::move(grouped[i]));
         }
     }

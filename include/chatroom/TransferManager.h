@@ -6,6 +6,7 @@
 #pragma once
 
 #include <string>
+#include <algorithm>
 #include <unordered_map>
 #include <set>
 #include <mutex>
@@ -15,7 +16,7 @@
 #include <optional>
 #include <memory>
 
-class Session;
+#include "../ctrl/Session.h"
 
 // 文件注册
 struct FileRegistration {
@@ -33,8 +34,8 @@ struct TransferSession {
     std::shared_ptr<Session> downloader_;                    // 下载者连接
     size_t filesize_ = 0;                                       // 文件大小
     
-    static constexpr size_t CHUNK_SIZE = 256 * 1024;            // 单个文件块大小为 256*1024 字节
-    static constexpr size_t WINDOW_SIZE = 8;                    // 窗口大小为8
+    static constexpr size_t kChunkSize = 256 * 1024;            // 单个文件块大小为 256*1024 字节
+    static constexpr size_t kWindowSize = 8;                    // 窗口大小为8
 
     size_t next_req_offset_ = 0;                                // 下一个要请求的偏移量，>= filesize_ 表示所有块已请求
 
@@ -47,19 +48,19 @@ struct TransferSession {
         return pending_acks_.empty() && total_received_ >= filesize_;
     }
 
-    // 该偏移处分块的字节数，末块可能不足 CHUNK_SIZE
+    // 该偏移处分块的字节数，末块可能不足 kChunkSize
     size_t chunk_size_for_offset(size_t offset) const {
-        return std::min(CHUNK_SIZE, filesize_ - offset);
+        return std::min(kChunkSize, filesize_ - offset);
     }
 
     // 窗口是否还有空位发送下一个 DWREQ
     bool has_window_space() const {
-        return pending_acks_.size() < WINDOW_SIZE;
+        return pending_acks_.size() < kWindowSize;
     }
 };
 
 // BINARY 帧头部格式: [session_id:8bytes LE][offset:8bytes LE][data_size:4bytes LE]
-static constexpr size_t BINARY_HEADER_SIZE = 20;
+static constexpr size_t kBinaryHeaderSize = 20;
 
 // 发往上传方的 DWREQ 请求，初始窗口与滑动补发共用同一结构
 struct NextRequest {
@@ -68,6 +69,13 @@ struct NextRequest {
     size_t offset_ = 0;              // 请求分块的文件内偏移
     size_t size_ = 0;                // 请求分块的字节数
     std::shared_ptr<Session> uploader_;       // 目标上传方连接
+};
+
+// start_transfer 返回值，无效时调用方回错误且不留会话
+struct TransferStart {
+    bool valid_ = false;                    // 传输已建立，可以开始发请求
+    uint64_t session_id_ = 0;               // 会话标识
+    std::vector<NextRequest> requests_;     // 初始窗口的 DWREQ 请求
 };
 
 // handle_chunk_data 返回值
@@ -90,9 +98,11 @@ struct AckResult {
     std::string file_id_;                    // 所属文件句柄
     // 窗口补发的下一个 DWREQ，无则 nullopt
     std::optional<NextRequest> next_;
+    // 会话结束时要用的信息，完成时会话已被清掉取不到
+    std::shared_ptr<Session> uploader_;      // 上传方连接
 };
 
-// cancel_by_conn 返回值
+// cancel_by_session 返回值
 struct CancelResult {
     struct SessionCancel {
         std::string file_id_;                 // 被取消传输的文件句柄
@@ -108,34 +118,35 @@ public:
     // 析构函数
     ~TransferManager();
 
-    // 文件注册，同一上传方可注册多个文件
+    // 文件注册，同一上传方可注册多个文件，零字节文件拒绝并返回空串
     std::string register_file(const std::string& filename, size_t filesize,
                                const std::shared_ptr<Session>& uploader);
 
-    // 查询文件注册信息，file_id 不存在时返回空注册
-    FileRegistration get_registration(const std::string& file_id);
+    // 查询文件注册信息，file_id 不存在时返回 nullopt
+    std::optional<FileRegistration> find_registration(const std::string& file_id);
 
     // 启动传输，返回初始窗口的请求列表
-    // 其中start_offset 为断点续传的起始偏移，普通下载传 0
-    std::vector<NextRequest> start_transfer(
-        const std::string& file_id, const std::shared_ptr<Session>& downloader,
-        size_t start_offset, uint64_t& out_session_id);
+    // start_offset 为断点续传的起始偏移，普通下载传 0
+    // 上传方已失效或起始偏移越界都返回无效结果，此时不建会话
+    TransferStart start_transfer(const std::string& file_id,
+                                 const std::shared_ptr<Session>& downloader,
+                                 size_t start_offset);
 
-    // 处理上传方 BINARY 数据，转发给对应下载方
-    ChunkResult handle_chunk_data(const std::string& data);
+    // 处理 BINARY 数据，from 为发送方，非本会话上传方一律丢弃
+    ChunkResult handle_chunk_data(const Session* from, const std::string& data);
 
-    // 处理下载方 ACK，滑动窗口
-    AckResult handle_ack(uint64_t session_id, size_t offset);
+    // 处理 ACK，from 为发送方，非本会话下载方一律丢弃
+    AckResult handle_ack(const Session* from, uint64_t session_id, size_t offset);
 
     // 按连接取消传输，上传方或下载方断开时调用
-    CancelResult cancel_by_conn(const std::shared_ptr<Session>& conn);
+    CancelResult cancel_by_session(const std::shared_ptr<Session>& sess);
 
     // 按文件取消单个文件，返回被孤立的下载方
     CancelResult cancel_file(const std::string& file_id);
 
     // 取消会话，仅清会话不碰文件注册，返回是否找到会话
-    bool cancel_session(const std::string& file_id,
-                        const std::shared_ptr<Session>& downloader);
+    bool cancel_session(const std::shared_ptr<Session>& downloader,
+                        const std::string& file_id);
 
 private:
     std::unordered_map<std::string, FileRegistration> registrations_;           // 文件注册表，file_id -> 注册信息
@@ -150,11 +161,13 @@ private:
     mutable std::mutex mtx_;                                                    // 保护以上数据结构的互斥锁
 
     // 生成文件句柄
-    std::string generate_file_id();
+    std::string create_file_id();
+    // 生成不与已有注册冲突的文件句柄 调用方须已持锁
+    std::string create_unique_file_id();
     // 文件注销
-    void unregister_file_impl(const std::string& file_id);
+    void unregister_file(const std::string& file_id);
     // 会话清理
-    void cleanup_session_impl(uint64_t session_id);
+    void cleanup_session(uint64_t session_id);
     // 取消单个会话
     void cancel_session_impl(uint64_t session_id, CancelResult* result);
     // 锁内查找 file_id + 下载方连接 的最新会话 id，找不到返回 nullopt
@@ -164,5 +177,5 @@ private:
     std::optional<NextRequest> try_send_next_request(TransferSession& ts);
     // 从连接索引中移除会话 id，空则删该条
     void remove_session_ref(std::unordered_map<Session*, std::vector<uint64_t>>& map,
-                            Session* conn, uint64_t session_id);
+                            Session* sess, uint64_t session_id);
 };

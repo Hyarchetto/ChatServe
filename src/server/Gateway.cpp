@@ -1,16 +1,20 @@
 // Gateway — 主从服务器组装层实现
 #include "server/Gateway.h"
 
-#include <unistd.h>
+#include <stdexcept>
 
 Gateway::Gateway(std::unique_ptr<Reactor> main,
                  std::vector<std::unique_ptr<Reactor>> subs)
     : main_(std::move(main)) {
+    // 至少一个从 Reactor 是 dispatch_fd 取模的前提 空则拒绝构造
+    if (subs.empty()) {
+        throw std::invalid_argument("Gateway 至少需要一个从 Reactor");
+    }
     this->subs_.reserve(subs.size());
     for (auto& sub : subs) {
         this->subs_.push_back(SubUnit{std::move(sub), {}});
     }
-    // 主 Reactor 的 fd 去路改为网关分发 从属 io Reactor 在 create_sub 已绑本地处理
+    // 主 Reactor 的 fd 去路设成网关分发 从属 io Reactor 在 create_sub 已绑本地处理
     this->main_->set_fd_handler([this](int fd) { this->dispatch_fd(fd); });
 }
 
@@ -24,7 +28,7 @@ bool Gateway::init() {
         return false;
     }
     for (auto& s : this->subs_) {
-        if (!s.reactor->init()) {
+        if (!s.reactor_->init()) {
             return false;
         }
     }
@@ -39,7 +43,7 @@ bool Gateway::start_listen(int port) {
 void Gateway::loop() {
     // 进主循环前先拉起 io Reactor 线程 保证 accept 分发 fd 时 io loop 已在跑
     for (auto& s : this->subs_) {
-        s.thread = std::thread([reactor = s.reactor.get()]() { reactor->loop(); });
+        s.thread_ = std::thread([reactor = s.reactor_.get()]() { reactor->loop(); });
     }
     // 阻塞到 stop 信号 quit 主 loop
     this->main_->loop();
@@ -50,26 +54,21 @@ void Gateway::loop() {
 void Gateway::stop() {
     this->main_->stop();
     for (auto& s : this->subs_) {
-        s.reactor->stop();
+        s.reactor_->stop();
     }
 }
 
 // 等待 io Reactor 线程退出 loop 尾部与析构兜底共用 可重复调用
 void Gateway::join() {
     for (auto& s : this->subs_) {
-        if (s.thread.joinable()) {
-            s.thread.join();
+        if (s.thread_.joinable()) {
+            s.thread_.join();
         }
     }
 }
 
 // 主 Reactor accept 到的 fd 按 fd 哈希分发 只主 loop 线程调用
 void Gateway::dispatch_fd(int fd) {
-    if (this->subs_.empty()) {
-        // 构造契约保证至少一个子 兜底关闭避免 fd 泄漏
-        close(fd);
-        return;
-    }
     size_t idx = static_cast<size_t>(fd) % this->subs_.size();
-    this->subs_[idx].reactor->add_connection(fd);
+    this->subs_[idx].reactor_->add_connection(fd);
 }

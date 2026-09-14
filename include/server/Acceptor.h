@@ -15,8 +15,8 @@ public:
     int start_listen(int port);
 
     // accept 监听 fd 上所有就绪连接 逐个回调 由事件循环读回调调用
-    void accept_connections(int listenfd, NewConnectionFn on_new_connection);
+    void accept_connections(int listen_fd, NewConnectionFn on_new_connection);
 
 private:
-    int listenfd_ = -1;
+    int listen_fd_ = -1;
 };

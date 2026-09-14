@@ -11,7 +11,7 @@ static constexpr size_t kMaxFramePayloadLen = 64 * 1024 * 1024;   // 单帧 payl
 static constexpr size_t kMaxControlPayloadLen = 125;              // RFC 6455 §5.5 控制帧 payload 上限
 
 // 按起始 opcode 投递完整消息到对应列表
-static void deliver_message(WsResult& result, WsOpcode opcode, std::string message) {
+static void deliver_message(WsOpcode opcode, std::string message, WsResult& result) {
     if (opcode == WsOpcode::BINARY) {
         result.binary_messages_.push_back(std::move(message));
     }
@@ -22,16 +22,15 @@ static void deliver_message(WsResult& result, WsOpcode opcode, std::string messa
 
 // ==================== 帧解析 ====================
 
-WsResult WsParser::handle(std::string_view buffer,
-                                              WsFragmentState* frag) {
+WsResult WsParser::handle(std::string_view buf, WsFragmentState* frag) {
     WsResult result;
 
     size_t pos = 0;
-    while (pos < buffer.size()) {
-        if (buffer.size() - pos < 2) break;  // 至少需要 2 字节头部
+    while (pos < buf.size()) {
+        if (buf.size() - pos < 2) break;  // 至少需要 2 字节头部
 
-        uint8_t b0 = static_cast<uint8_t>(buffer[pos]);
-        uint8_t b1 = static_cast<uint8_t>(buffer[pos + 1]);
+        uint8_t b0 = static_cast<uint8_t>(buf[pos]);
+        uint8_t b1 = static_cast<uint8_t>(buf[pos + 1]);
 
         bool fin = (b0 & 0x80) != 0;
         uint8_t opcode_val = b0 & 0x0F;
@@ -42,18 +41,17 @@ WsResult WsParser::handle(std::string_view buffer,
 
         // 扩展长度
         if (payload_len == 126) {
-            if (buffer.size() - pos < 4) break;
-            payload_len = (static_cast<uint64_t>(
-                static_cast<uint8_t>(buffer[pos + 2])) << 8) |
-                static_cast<uint8_t>(buffer[pos + 3]);
+            if (buf.size() - pos < 4) break;
+            payload_len = (static_cast<uint64_t>(static_cast<uint8_t>(buf[pos + 2])) << 8) |
+                                                 static_cast<uint8_t>(buf[pos + 3]);
             header_size = 4;
         } 
         else if (payload_len == 127) {
-            if (buffer.size() - pos < 10) break;
+            if (buf.size() - pos < 10) break;
             payload_len = 0;
             for (int i = 0; i < 8; ++i) {
                 payload_len = (payload_len << 8) |
-                    static_cast<uint8_t>(buffer[pos + 2 + i]);
+                    static_cast<uint8_t>(buf[pos + 2 + i]);
             }
             header_size = 10;
         }
@@ -64,8 +62,8 @@ WsResult WsParser::handle(std::string_view buffer,
             break;
         }
         uint8_t masking_key[4];
-        if (buffer.size() - pos < header_size + 4) break;
-        std::memcpy(masking_key, buffer.data() + pos + header_size, 4);
+        if (buf.size() - pos < header_size + 4) break;
+        std::memcpy(masking_key, buf.data() + pos + header_size, 4);
         header_size += 4;
 
         // 单帧 payload 超限直接关闭连接：不推进 pos 也不跳过
@@ -76,10 +74,10 @@ WsResult WsParser::handle(std::string_view buffer,
         }
 
         // 检查数据是否完整
-        if (buffer.size() - pos < header_size + static_cast<size_t>(payload_len)) break;
+        if (buf.size() - pos < header_size + static_cast<size_t>(payload_len)) break;
 
         // 提取 payload
-        std::string payload(buffer.data() + pos + header_size, payload_len);
+        std::string payload(buf.data() + pos + header_size, payload_len);
         WsFrame::apply_mask(reinterpret_cast<uint8_t*>(payload.data()),
                    payload.size(), masking_key);
 
@@ -121,9 +119,14 @@ WsResult WsParser::handle(std::string_view buffer,
                 result.close_ = true;
                 break;
             }
+            // 单帧上限挡不住拆成很多帧累积，同一条消息也要有总量上限
+            if (frag->buffer_.size() + payload.size() > WsFragmentState::kMaxMessageBytes) {
+                result.close_ = true;
+                break;
+            }
             frag->buffer_.append(payload);
             if (fin) {
-                deliver_message(result, frag->first_opcode_, std::move(frag->buffer_));
+                deliver_message(frag->first_opcode_, std::move(frag->buffer_), result);
                 frag->buffer_.clear();
                 frag->in_fragmented_ = false;
             }
@@ -136,7 +139,7 @@ WsResult WsParser::handle(std::string_view buffer,
                 break;
             }
             if (fin) {
-                deliver_message(result, opcode, std::move(payload));
+                deliver_message(opcode, std::move(payload), result);
             }
             else if (frag) {
                 // 分片开始

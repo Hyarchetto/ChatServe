@@ -4,7 +4,6 @@
 #include "server/CtrlDispatcher.h"
 #include "core/ThreadPool.h"
 
-#include <iostream>
 #include <vector>
 
 ReactorFactory::ReactorFactory() {
@@ -45,10 +44,6 @@ std::unique_ptr<Reactor> ReactorFactory::create_sub() {
 
 // 生成主从工作者服务器 用 create_main/create_sub 产组件并组装
 std::unique_ptr<Gateway> ReactorFactory::create_gateway(size_t sub_count) {
-    // 至少一个 io Reactor 防除零
-    if (sub_count == 0) {
-        sub_count = 1;
-    }
     this->next_io_ = 0;
     auto main = this->create_main();
     std::vector<std::unique_ptr<Reactor>> subs;
@@ -60,18 +55,12 @@ std::unique_ptr<Gateway> ReactorFactory::create_gateway(size_t sub_count) {
     return std::make_unique<Gateway>(std::move(main), std::move(subs));
 }
 
-void ReactorFactory::start_dispatcher() {
-    if (this->dispatcher_) {
-        this->dispatcher_->start();
-    }
-}
-
 // 停中控线程后排空业务线程池 保证在途任务完成前工厂对象仍存活
 void ReactorFactory::shutdown() {
-    if (this->dispatcher_) {
-        this->dispatcher_->stop();
-    }
-    if (this->works_) {
-        this->works_->shutdown();
-    }
+    this->dispatcher_->stop();
+    this->works_->shutdown();
+}
+
+void ReactorFactory::start_dispatcher() {
+    this->dispatcher_->start();
 }

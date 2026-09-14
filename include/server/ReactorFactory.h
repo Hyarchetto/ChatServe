@@ -1,7 +1,7 @@
 // ReactorFactory — Reactor 形态与服务器工厂
 // 工厂生成什么返回什么 统一返回具体类型 Reactor/Gateway 不向上抽象
 // 公共资源 业务线程池 ThreadPool 与 中控 CtrlDispatcher 归工厂持有 生命周期归工厂
-// 命令经中控 submit 进业务线程池执行 池为旧实现原样复用 不改动
+// 命令经中控 submit 进业务线程池执行
 // 可选组件 Acceptor/ConnHandler 由 Reactor 内部创建 工厂按形态调用 create 触发
 // 单 Reactor 完整可用 主从工作者网关由 create_gateway 产组件并组装 网关不持工厂
 #pragma once
@@ -9,11 +9,10 @@
 #include <cstddef>
 #include <memory>
 
+#include "../core/ThreadPool.h"
+#include "CtrlDispatcher.h"
 #include "Gateway.h"
-
-class Reactor;
-class CtrlDispatcher;
-class ThreadPool;
+#include "Reactor.h"
 
 class ReactorFactory {
 public:

@@ -40,7 +40,7 @@ private:
     // 从连接读入读缓冲 返回 false 表示连接已关闭
     bool pump_read(const std::shared_ptr<Connection>& conn);
     // 客户端数据总入口 按 ws_mode_ 分流 HTTP 或 WS
-    void handle_clientfd(const std::shared_ptr<Connection>& conn);
+    void handle_client_fd(const std::shared_ptr<Connection>& conn);
     // 施加一条 HTTP 决策到连接 与 handle_ws 对称 升级握手在此完成
     void handle_http(const std::shared_ptr<Connection>& conn, HttpAction action);
     // 施加一条 WS 决策到连接 与 handle_http 对称 上行与回包在此发生
@@ -62,5 +62,5 @@ private:
     Mailbox<CtrlUp>& ctrl_inbox_;
     std::unordered_map<Session*, std::shared_ptr<Connection>> conns_;  // Session → 连接 下行查找用
 
-    static constexpr int BUFFER_SIZE = 4096;
+    static constexpr int kBufferSize = 4096;
 };

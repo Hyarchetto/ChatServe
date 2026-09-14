@@ -20,8 +20,7 @@ WsAction WsHandler::handle(std::string_view buf, WsFragmentState* frag) {
 
     // PING 本地回 PONG
     if (result.ping_) {
-        action.responses_.push_back(
-            WsFrame::build(WsOpcode::PONG, result.ping_payload_));
+        action.responses_.push_back(WsFrame::build(WsOpcode::PONG, result.ping_payload_));
     }
     // 完整 TEXT 应用消息上行 中控按命令分发
     action.messages_ = std::move(result.messages_);
@@ -30,8 +29,7 @@ WsAction WsHandler::handle(std::string_view buf, WsFragmentState* frag) {
     // CLOSE 帧 回包并置关闭 写调度发完即回收
     if (result.close_) {
         action.close_ = true;
-        action.responses_.push_back(
-            WsFrame::build(WsOpcode::CLOSE, result.close_payload_));
+        action.responses_.push_back(WsFrame::build(WsOpcode::CLOSE, result.close_payload_));
     }
     return action;
 }

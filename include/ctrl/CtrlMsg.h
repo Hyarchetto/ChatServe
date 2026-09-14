@@ -24,7 +24,7 @@ struct CtrlUp {
 };
 
 // 中控→io 下行 一条待写给某连接的应用消息 io 按 Session 找连接组帧
-// binary 为真时按原始字节组 BINARY 帧(文件分块) 否则组 TEXT 帧
+// binary 为真时按原始字节组 BINARY 帧 文件分块 否则组 TEXT 帧
 struct CtrlDown {
     std::shared_ptr<Session> sess_;
     std::string text_;

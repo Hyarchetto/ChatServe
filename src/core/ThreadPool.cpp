@@ -1,6 +1,8 @@
 // 线程池
 #include "core/ThreadPool.h"
 
+#include <iostream>
+
 ThreadPool::ThreadPool(size_t thread_num) {
     if (thread_num == 0) {
         thread_num = 1;
@@ -12,43 +14,6 @@ ThreadPool::ThreadPool(size_t thread_num) {
 
 ThreadPool::~ThreadPool() {
     this->shutdown();
-}
-
-void ThreadPool::worker_loop(size_t index) {
-    while (true) {
-        std::function<void()> task;
-        {
-            std::unique_lock<std::mutex> lock(this->queue_mutex_);
-            this->condition_.wait(lock, [this] {
-                return !this->tasks_.empty() || this->stop_.load(std::memory_order_acquire);
-            });
-
-            if (this->tasks_.empty() && this->stop_.load(std::memory_order_acquire)) {
-                return;
-            }
-            task = std::move(this->tasks_.front());
-            this->tasks_.pop();
-            ++this->active_tasks_;
-        }
-        try {
-            task();
-        } 
-        catch (const std::exception& e) {
-            std::cerr << "ThreadPool: worker-" << index
-                      << " 任务捕获异常: " << e.what() << std::endl;
-        } 
-        catch (...) {
-            std::cerr << "ThreadPool: worker-" << index
-                      << " 任务捕获未知异常" << std::endl;
-        }
-        {
-            std::lock_guard<std::mutex> lock(this->queue_mutex_);
-            --this->active_tasks_;
-            if (this->tasks_.empty() && this->active_tasks_ == 0) {
-                this->condition_.notify_all();
-            }
-        }
-    }
 }
 
 void ThreadPool::shutdown() {
@@ -89,7 +54,47 @@ bool ThreadPool::is_running() const {
 
 void ThreadPool::wait_all() {
     std::unique_lock<std::mutex> lock(this->queue_mutex_);
+    // stop_ 一并作为出口，否则池停之后 worker 全退，条件再满足也没人唤醒
+    // 取活与减 active_tasks_ 都在本锁内，锁内观察到的计数与队列自洽
     this->condition_.wait(lock, [this] {
-        return this->tasks_.empty() && this->active_tasks_ == 0;
+        return this->stop_.load(std::memory_order_acquire) ||
+               (this->tasks_.empty() && this->active_tasks_ == 0);
     });
+}
+
+void ThreadPool::worker_loop(size_t index) {
+    while (true) {
+        std::function<void()> task;
+        {
+            std::unique_lock<std::mutex> lock(this->queue_mutex_);
+            this->condition_.wait(lock, [this] {
+                return !this->tasks_.empty() || this->stop_.load(std::memory_order_acquire);
+            });
+
+            if (this->tasks_.empty() && this->stop_.load(std::memory_order_acquire)) {
+                return;
+            }
+            task = std::move(this->tasks_.front());
+            this->tasks_.pop();
+            ++this->active_tasks_;
+        }
+        try {
+            task();
+        } 
+        catch (const std::exception& e) {
+            std::cerr << "ThreadPool: worker-" << index
+                      << " 任务捕获异常: " << e.what() << std::endl;
+        } 
+        catch (...) {
+            std::cerr << "ThreadPool: worker-" << index
+                      << " 任务捕获未知异常" << std::endl;
+        }
+        {
+            std::lock_guard<std::mutex> lock(this->queue_mutex_);
+            --this->active_tasks_;
+            if (this->tasks_.empty() && this->active_tasks_ == 0) {
+                this->condition_.notify_all();
+            }
+        }
+    }
 }

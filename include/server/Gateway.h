@@ -32,8 +32,8 @@ public:
 private:
     // io Reactor 与它的事件循环线程绑定为一个单元
     struct SubUnit {
-        std::unique_ptr<Reactor> reactor;
-        std::thread thread;
+        std::unique_ptr<Reactor> reactor_;
+        std::thread thread_;
     };
 
     // 等待 io Reactor 线程退出

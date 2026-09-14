@@ -3,16 +3,12 @@
 
 #include <string>
 #include <vector>
-#include <unordered_set>
 
 struct AppMessage {
-    std::string command_;                // 命令字，JOIN/MSG/SYS 等，裸文本消息为空
-    std::vector<std::string> params_;    // | 分隔的参数列表
-    std::string raw_;                    // 原始消息原文
+    std::string command_;                // 自定义协议头
+    std::vector<std::string> params_;    // 参数列表
+    std::string rest_;                   // 内容原文
 
-    bool is_command() const {
-        return !command_.empty();
-    }
     size_t param_count() const {
         return params_.size();
     }

@@ -25,15 +25,10 @@ void Reactor::create_acceptor() {
 
 // 创建连接处理器并绑定 fd 去路 io worker 直接把 fd 交给本地 ConnHandler
 void Reactor::create_handler(int io_index, Mailbox<CtrlUp>& ctrl_inbox) {
-    this->conn_handler_ = std::make_unique<ConnHandler>(this->loop_, io_index,
-                                                        ctrl_inbox);
+    this->conn_handler_ = std::make_unique<ConnHandler>(this->loop_, io_index, ctrl_inbox);
     this->fd_handler_ = [this](int fd) {
         this->conn_handler_->add_connection(fd);
     };
-}
-
-Mailbox<CtrlDown>& Reactor::outbox() {
-    return this->conn_handler_->outbox();
 }
 
 void Reactor::set_fd_handler(std::function<void(int)> handler) {
@@ -50,22 +45,26 @@ bool Reactor::start_listen(int port) {
         std::cerr << "Acceptor未创建" << std::endl;
         return false;
     }
-    int listenfd = this->acceptor_->start_listen(port);
-    if (listenfd < 0) {
+    int listen_fd = this->acceptor_->start_listen(port);
+    if (listen_fd < 0) {
         return false;
     }
-    this->loop_.add_event(listenfd, EPOLLIN | EPOLLET,
-        [this, listenfd]() {
-            this->acceptor_->accept_connections(listenfd,
+    // 挂不上监听这个端口就永远收不到连接，让启动直接失败
+    return this->loop_.add_event(listen_fd, EPOLLIN | EPOLLET,
+        [this, listen_fd]() {
+            this->acceptor_->accept_connections(listen_fd,
                 [this](int fd) { this->fd_handler_(fd); });
         });
-    return true;
 }
 
 // 从属入口 网关从其他线程投递 fd 通过 post 切到本事件循环执行
 // 直接跨线程调 add_connection 会改 event_map_ 非线程安全
 void Reactor::add_connection(int fd) {
     this->loop_.post([this, fd]() { this->fd_handler_(fd); });
+}
+
+Mailbox<CtrlDown>& Reactor::outbox() {
+    return this->conn_handler_->outbox();
 }
 
 void Reactor::loop() {

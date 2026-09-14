@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <sstream>
 
+#include "HttpRequest.h"
+
 struct HttpResponse {
     int status_ = 200;
     std::string status_text_ = "OK";
@@ -18,8 +20,8 @@ struct HttpResponse {
         // 状态行
         oss << version_ << ' ' << status_ << ' ' << status_text_ << "\r\n";
 
-        // 如果调用方未显式设置 Content-Length，自动计算
-        bool has_cl = headers_.find("Content-Length") != headers_.end();
+        // 调用方未显式设置 Content-Length 时才自动计算
+        bool has_cl = this->has_header("Content-Length");
         for (auto& [k, v] : headers_) {
             oss << k << ": " << v << "\r\n";
         }
@@ -31,5 +33,10 @@ struct HttpResponse {
         // body
         oss << body_;
         return oss.str();
+    }
+
+    // 头部名大小写不敏感查找，大小写不同的同名字段算同一个
+    bool has_header(const std::string& key) const {
+        return HttpRequest::find_header_ci(headers_, key) != nullptr;
     }
 };

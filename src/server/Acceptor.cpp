@@ -13,24 +13,24 @@
 Acceptor::Acceptor() = default;
 
 Acceptor::~Acceptor() {
-    if (this->listenfd_ >= 0) {
-        close(this->listenfd_);
+    if (this->listen_fd_ >= 0) {
+        close(this->listen_fd_);
     }
 }
 
 int Acceptor::start_listen(int port) {
     // 已监听则直接返回，防止重复调用导致泄漏
-    if (this->listenfd_ >= 0) {
-        return this->listenfd_;
+    if (this->listen_fd_ >= 0) {
+        return this->listen_fd_;
     }
-    int listenfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (listenfd < 0) {
+    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0) {
         perror("socket error");
         return -1;
     }
 
     int opt = 1;
-    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
@@ -38,35 +38,35 @@ int Acceptor::start_listen(int port) {
     server_addr.sin_port = htons(port);
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(listenfd, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (bind(listen_fd, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         perror("bind error");
-        close(listenfd);
+        close(listen_fd);
         return -1;
     }
-    if (listen(listenfd, 1024) < 0) {
+    if (listen(listen_fd, 1024) < 0) {
         perror("listen error");
-        close(listenfd);
+        close(listen_fd);
         return -1;
     }
 
-    int flags = fcntl(listenfd, F_GETFL, 0);
-    fcntl(listenfd, F_SETFL, flags | O_NONBLOCK);
+    int flags = fcntl(listen_fd, F_GETFL, 0);
+    fcntl(listen_fd, F_SETFL, flags | O_NONBLOCK);
 
-    this->listenfd_ = listenfd;
+    this->listen_fd_ = listen_fd;
 
     std::cout << "服务器开始监听 " << port << std::endl;
     std::cout << "------------------------------------------" << std::endl;
 
-    return listenfd;
+    return listen_fd;
 }
 
-void Acceptor::accept_connections(int listenfd, NewConnectionFn on_new_connection) {
+void Acceptor::accept_connections(int listen_fd, NewConnectionFn on_new_connection) {
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
 
     while (true) {
-        int clientfd = accept(listenfd, (struct sockaddr*)&client_addr, &client_len);
-        if (clientfd < 0) {
+        int client_fd = accept(listen_fd, (struct sockaddr*)&client_addr, &client_len);
+        if (client_fd < 0) {
             if (errno == EAGAIN) {
                 break;
             }
@@ -79,7 +79,7 @@ void Acceptor::accept_connections(int listenfd, NewConnectionFn on_new_connectio
             }
         }
         else {
-            on_new_connection(clientfd);
+            on_new_connection(client_fd);
         }
     }
 }

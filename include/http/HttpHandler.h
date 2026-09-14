@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include "HttpRequest.h"
 #include "HttpRouter.h"
 
 // 一条 HTTP 处理决策 由施加侧应用到连接

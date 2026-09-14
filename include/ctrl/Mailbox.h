@@ -61,7 +61,7 @@ private:
 
     // 只在消费线程执行 排空到队列空再放行唤醒 追加晚于交换的由下一轮收
     void drain() {
-        for (;;) {
+        while (true) {
             std::deque<T> local;
             {
                 std::lock_guard<std::mutex> lock(this->mtx_);

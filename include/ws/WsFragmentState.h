@@ -7,6 +7,10 @@
 #include "WsOpcode.h"
 
 struct WsFragmentState {
+    // 一条消息跨帧累积的上限，单帧上限管不住拆成很多帧的情况
+    // 收到超过上限的 CONTINUATION 时解析器置 close_ 不再接收
+    static constexpr size_t kMaxMessageBytes = 8 * 1024 * 1024;
+
     bool in_fragmented_ = false;
     WsOpcode first_opcode_ = WsOpcode::TEXT;
     std::string buffer_;
