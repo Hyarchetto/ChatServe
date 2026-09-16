@@ -2,7 +2,7 @@
 // 职责边界 连接泵 + 协议层 业务全部经共享 Session 控制块上行中控
 // HTTP/静态文件内联处理 WebSocket 只做分帧 只写给本线程的连接
 // 完整 TEXT 应用消息上行中控 断开或 CLOSE 上报 中控据此清理业务
-// 中控下行经 outbox 邮箱到达本线程 按 Session 找连接逐条写出
+// 中控下行经下行邮箱到达本线程 按 Session 找连接逐条写出
 #pragma once
 
 #include <memory>
@@ -21,16 +21,15 @@
 
 class ConnHandler {
 public:
-    // 共享上行收件箱与 io 序号由装配注入 事件循环本类持有
-    ConnHandler(EventLoop& loop, int io_index,
-                Mailbox<CtrlUp>& ctrl_inbox);
+    // 共享上行邮箱与 io 序号由装配注入 事件循环本类持有
+    ConnHandler(EventLoop& loop, int io_index, Mailbox<CtrlUp>& ctrl_uplink_box);
 
     // 添加一个客户端连接到本处理器
     // 必须在 io 线程调用 直接注册到 EventLoop
     void add_connection(int fd);
 
-    // 中控下行邮箱 装配阶段由中控 attach
-    Mailbox<CtrlDown>& outbox() { return this->outbox_; }
+    // 本 io 的下行邮箱 装配阶段由中控 attach
+    Mailbox<CtrlDown>& downlink_box() { return this->downlink_box_; }
 
     // 唯一的连接关闭入口 幂等 断开或写调度发完 CLOSE 后触发
     // 必须在 io 线程调用
@@ -53,13 +52,13 @@ private:
     // 下行邮箱 sink 只在本 io 线程执行
     void downlink(CtrlDown down);
 
-    EventLoop& loop_;
-    int io_ = 0;                      // 本 worker 的 io 序号 建连接时写进 Session 供中控分发
+    EventLoop& loop_;                   // 本线程事件循环 writer_ 与 downlink_box_ 按引用绑定它
+    int io_ = 0;                        // 本 worker 的 io 序号
     WriteScheduler writer_;
     HttpHandler http_;
     WsHandler ws_;
-    Mailbox<CtrlDown> outbox_;
-    Mailbox<CtrlUp>& ctrl_inbox_;
+    Mailbox<CtrlDown> downlink_box_;    // 中控投 本线程收
+    Mailbox<CtrlUp>& ctrl_uplink_box_;  // 本线程投 中控收
     std::unordered_map<Session*, std::shared_ptr<Connection>> conns_;  // Session → 连接 下行查找用
 
     static constexpr int kBufferSize = 4096;

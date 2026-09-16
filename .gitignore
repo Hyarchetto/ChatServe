@@ -34,6 +34,3 @@ valgrind.out
 
 # Secrets
 scripts/key.pem
-
-# Test 代码，不上传 GitHub
-test/

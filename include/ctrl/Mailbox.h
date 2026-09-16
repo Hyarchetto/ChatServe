@@ -29,7 +29,7 @@ public:
         this->append_and_wake(std::move(item));
     }
 
-    // 追加一批 线程安全 只保证一次唤醒 消费线程调用时立即排空
+    // 追加一批 线程安全 只保证一次唤醒
     void post_batch(std::vector<T> items) {
         for (auto& it : items) {
             this->append_and_wake(std::move(it));
@@ -48,13 +48,7 @@ private:
                 need_wake = true;
             }
         }
-        if (!need_wake) {
-            return;
-        }
-        if (this->consumer_.is_in_loop_thread()) {
-            this->drain();
-        }
-        else {
+        if (need_wake) {
             this->consumer_.post([this]() { this->drain(); });
         }
     }
@@ -79,7 +73,7 @@ private:
 
     EventLoop& consumer_;
     Sink sink_;
-    std::deque<T> q_;        // 待消费队列 锁保护
+    std::deque<T> q_;               // 待消费队列 锁保护
     std::mutex mtx_;
-    bool scheduled_ = false; // 有排空在途 锁保护
+    bool scheduled_ = false;        // 有排空在途 锁保护
 };

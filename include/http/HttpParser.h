@@ -21,6 +21,7 @@ struct HttpResult {
     HttpRequest    request_;
     std::string    error_msg_;           // BAD_REQUEST 时描述错误原因
     size_t         consumed_ = 0;        // 已消耗的字节数
+    bool           close_ = false;       // 客户端要求关闭连接
 };
 
 // HTTP 解析器

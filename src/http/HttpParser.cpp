@@ -5,15 +5,30 @@
 #include <string_view>
 #include <sstream>
 
-// 大小写不敏感的子串包含 逐位退化成等长比较 命中任一位置即真
-static bool icontains(std::string_view haystack, std::string_view needle) {
-    if (needle.size() > haystack.size()) {
-        return false;
-    }
-    for (size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
-        if (HttpRequest::ieq(haystack.substr(i, needle.size()), needle)) {
+// Connection 头的值是逗号分隔的 token 列表 判断其中是否含指定 token
+// 大小写不敏感 两侧空白与空 token 都跳过
+// want 传小写字面量 与归一化后的 token 直接比 头值不能就地改 Sec-WebSocket-Key 的 base64 就大小写敏感
+static bool has_conn_token(const std::string& value, std::string_view want) {
+    size_t start = 0;
+    while (start <= value.size()) {
+        size_t end = value.find(',', start);
+        if (end == std::string::npos) {
+            end = value.size();
+        }
+        std::string_view token(value.data() + start, end - start);
+        while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) {
+            token.remove_prefix(1);
+        }
+        while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) {
+            token.remove_suffix(1);
+        }
+        if (lowercase(token) == want) {
             return true;
         }
+        if (end == value.size()) {
+            break;
+        }
+        start = end + 1;
     }
     return false;
 }
@@ -50,12 +65,17 @@ HttpResult HttpParser::handle(std::string_view buf) {
             }
             return result;  // INCOMPLETE
         }
-        if (std::istringstream iss(line); !(iss >> result.request_.method_ >> result.request_.path_ >> result.request_.version_)) {
+        std::istringstream iss(line);
+        // 如果请求头不完整
+        if (!(iss >> result.request_.method_ >> result.request_.path_ >> result.request_.version_)) {
+            // 直接返回错误请求对应响应
             result.type_ = HttpResultType::BAD_REQUEST;
             result.error_msg_ = "Invalid request line";
             return result;
         }
+        // 如果请求方式不支持
         if (result.request_.method_ != "GET" && result.request_.method_ != "POST") {
+            // 同样返回错误请求对应响应
             result.type_ = HttpResultType::BAD_REQUEST;
             result.error_msg_ = "Only GET and POST are supported";
             return result;
@@ -84,11 +104,22 @@ HttpResult HttpParser::handle(std::string_view buf) {
             result.error_msg_ = "Invalid header";
             return result;
         }
+        // RFC 7230 的 OWS 是空格与水平制表符，冒号两侧都要去掉
+        // 头名留着空白会和查找用的名字对不上，进而被静默忽略
         std::string key = line.substr(0, colon);
+        size_t key_end = key.find_last_not_of(" \t");
+        if (key_end == std::string::npos) {
+            result.type_ = HttpResultType::BAD_REQUEST;
+            result.error_msg_ = "Invalid header";
+            return result;
+        }
+        // 头名归一化成小写，头表与查找侧走同一个口径
+        key = lowercase(std::string_view(key).substr(0, key_end + 1));
+
         std::string val = line.substr(colon + 1);
-        // RFC 7230 的 OWS 同时包含空格与水平制表符，两个都要去掉
         size_t first = val.find_first_not_of(" \t");
         val = (first == std::string::npos) ? std::string{} : val.substr(first);
+
         result.request_.headers_[key] = val;
     }
 
@@ -126,13 +157,15 @@ HttpResult HttpParser::handle(std::string_view buf) {
     {
         auto upgrade = result.request_.find_header("Upgrade");
         auto connection_hdr = result.request_.find_header("Connection");
-        if (upgrade && HttpRequest::ieq(*upgrade, "websocket") &&
-            connection_hdr && icontains(*connection_hdr, "Upgrade")) {
+        if (upgrade && lowercase(*upgrade) == "websocket" &&
+            connection_hdr && has_conn_token(*connection_hdr, "upgrade")) {
             result.type_ = HttpResultType::WS_UPGRADE;
-        } 
+        }
         else {
             result.type_ = HttpResultType::OK;
         }
+        // 客户端要求关闭连接 回应后由施加侧断开
+        result.close_ = connection_hdr && has_conn_token(*connection_hdr, "close");
         result.consumed_ = pos;
         return result;
     }

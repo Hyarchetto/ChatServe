@@ -1,9 +1,11 @@
 // HttpHandler — HTTP 协议决策器 纯函数实现
 #include "http/HttpHandler.h"
 
+#include <string_view>
 #include <utility>
 
 #include "http/HttpParser.h"
+#include "http/HttpRequest.h"
 #include "http/HttpResponse.h"
 #include "http/ErrorResponse.h"
 
@@ -21,8 +23,7 @@ HttpAction HttpHandler::handle(std::string_view buf) {
             }
             // 错误的 HTTP 请求可能是网络问题或者网络攻击 直接断开好了
             case HttpResultType::BAD_REQUEST: {
-                action.responses_.push_back(
-                    ErrorResponse::build_bad_request(result.error_msg_).serialize());
+                action.responses_.push_back( ErrorResponse::build_bad_request(result.error_msg_).serialize());
                 action.close_ = true;
                 return action;
             }
@@ -34,8 +35,12 @@ HttpAction HttpHandler::handle(std::string_view buf) {
             }
             // 普通的 HTTP 请求 内联路由
             case HttpResultType::OK: {
-                action.responses_.push_back(
-                    this->http_router_.handle(result.request_).serialize());
+                action.responses_.push_back( this->http_router_.handle(result.request_).serialize());
+                // 客户端要求关闭则回完这一条就断 后续请求不再处理
+                if (result.close_) {
+                    action.close_ = true;
+                    return action;
+                }
                 break;
             }
         }

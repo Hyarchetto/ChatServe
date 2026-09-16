@@ -24,8 +24,8 @@ void Reactor::create_acceptor() {
 }
 
 // 创建连接处理器并绑定 fd 去路 io worker 直接把 fd 交给本地 ConnHandler
-void Reactor::create_handler(int io_index, Mailbox<CtrlUp>& ctrl_inbox) {
-    this->conn_handler_ = std::make_unique<ConnHandler>(this->loop_, io_index, ctrl_inbox);
+void Reactor::create_handler(int io_index, Mailbox<CtrlUp>& ctrl_uplink_box) {
+    this->conn_handler_ = std::make_unique<ConnHandler>(this->loop_, io_index, ctrl_uplink_box);
     this->fd_handler_ = [this](int fd) {
         this->conn_handler_->add_connection(fd);
     };
@@ -52,8 +52,7 @@ bool Reactor::start_listen(int port) {
     // 挂不上监听这个端口就永远收不到连接，让启动直接失败
     return this->loop_.add_event(listen_fd, EPOLLIN | EPOLLET,
         [this, listen_fd]() {
-            this->acceptor_->accept_connections(listen_fd,
-                [this](int fd) { this->fd_handler_(fd); });
+            this->acceptor_->accept_connections(listen_fd, [this](int fd) { this->fd_handler_(fd); });
         });
 }
 
@@ -63,8 +62,8 @@ void Reactor::add_connection(int fd) {
     this->loop_.post([this, fd]() { this->fd_handler_(fd); });
 }
 
-Mailbox<CtrlDown>& Reactor::outbox() {
-    return this->conn_handler_->outbox();
+Mailbox<CtrlDown>& Reactor::downlink_box() {
+    return this->conn_handler_->downlink_box();
 }
 
 void Reactor::loop() {

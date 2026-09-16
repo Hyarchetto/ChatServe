@@ -21,8 +21,8 @@ std::unique_ptr<Reactor> ReactorFactory::create_single() {
     size_t io = this->next_io_++;
     auto reactor = std::make_unique<Reactor>();
     reactor->create_acceptor();
-    reactor->create_handler(static_cast<int>(io), this->dispatcher_->inbox());
-    this->dispatcher_->attach_outbox(io, reactor->outbox());
+    reactor->create_handler(static_cast<int>(io), this->dispatcher_->uplink_box());
+    this->dispatcher_->attach_downlink_box(io, reactor->downlink_box());
     this->start_dispatcher();
     return reactor;
 }
@@ -33,12 +33,12 @@ std::unique_ptr<Reactor> ReactorFactory::create_main() {
     return reactor;
 }
 
-// io 从属 Reactor 绑定中控上行收件箱 并把自身下行出站挂到中控
+// io 从属 Reactor 绑定中控上行邮箱 并把自身下行邮箱挂到中控
 std::unique_ptr<Reactor> ReactorFactory::create_sub() {
     size_t io = this->next_io_++;
     auto reactor = std::make_unique<Reactor>();
-    reactor->create_handler(static_cast<int>(io), this->dispatcher_->inbox());
-    this->dispatcher_->attach_outbox(io, reactor->outbox());
+    reactor->create_handler(static_cast<int>(io), this->dispatcher_->uplink_box());
+    this->dispatcher_->attach_downlink_box(io, reactor->downlink_box());
     return reactor;
 }
 

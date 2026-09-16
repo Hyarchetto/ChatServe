@@ -19,8 +19,8 @@ enum class CtrlUpKind : uint8_t {
 // io→中控 上行事件
 struct CtrlUp {
     CtrlUpKind kind_ = CtrlUpKind::WS_TEXT;
-    std::shared_ptr<Session> sess_;  // 连接控制块 归属 io 随其 io_ 自带 中控无需登记
-    std::string text_;            // WS_TEXT 时为应用原文 WS_BINARY 时为原始字节
+    std::shared_ptr<Session> sess_;     // 连接控制块 归属 io 随其 io_ 自带 中控无需登记
+    std::string text_;                  // 应用原文 WS_BINARY 时为原始字节
 };
 
 // 中控→io 下行 一条待写给某连接的应用消息 io 按 Session 找连接组帧

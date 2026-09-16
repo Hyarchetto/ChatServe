@@ -10,9 +10,6 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
-// 当前线程正在运行的事件循环 loop 入口登记 邮箱据此判断本地直投还是跨线程投递
-static thread_local EventLoop* t_loop = nullptr;
-
 // 构造函数什么都不做，真正的初始化工作由 init 函数完成
 // 在容器初始化完毕后再调用 init
 EventLoop::EventLoop() {}
@@ -47,7 +44,6 @@ bool EventLoop::init() {
 
 // 事件循环主函数
 void EventLoop::loop() {
-    t_loop = this;
     std::vector<epoll_event> evs(kMaxEvents);
 
     while (!this->quit_) {
@@ -87,7 +83,6 @@ void EventLoop::loop() {
             }
         }
     }
-    t_loop = nullptr;
 }
 
 // 设置退出标志并唤醒 epoll_wait
@@ -136,11 +131,6 @@ bool EventLoop::mod_event(int fd, uint32_t events) {
         return false;
     }
     return true;
-}
-
-// 判断当前线程是否本事件循环线程
-bool EventLoop::is_in_loop_thread() const {
-    return t_loop == this;
 }
 
 // 入队后写 eventfd 唤醒 epoll_wait 取件 不判线程 本 loop 线程调也只是入队

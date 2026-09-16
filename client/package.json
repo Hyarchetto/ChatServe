@@ -23,7 +23,8 @@
       "package.json"
     ],
     "win": {
-      "target": "portable"
+      "target": "portable",
+      "artifactName": "${productName}.${ext}"
     }
   }
 }

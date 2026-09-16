@@ -2,7 +2,7 @@
 // 主 Reactor   监听 accept 把 fd 交给网关回调 由网关分发到从属 io 线程
 // 从属 Reactor 不监听 网关把 fd 投递进来 本线程做 io worker 连接泵
 // 主形态 create_acceptor 从属形态 create_handler 各自只建所需组件
-// io worker 不碰业务状态 连接泵只读写自己的连接 业务经中控频道上下行
+// io worker 不碰业务状态 连接泵只读写自己的连接 业务经中控邮箱上下行
 #pragma once
 
 #include <functional>
@@ -23,8 +23,8 @@ public:
     // 创建监听组件 Acceptor 主形态由装配方调用
     void create_acceptor();
     // 创建连接处理器并绑定 fd 去路 从属 io worker 形态由装配方调用
-    // 上行收件箱与 io 序号注入 ConnHandler
-    void create_handler(int io_index, Mailbox<CtrlUp>& ctrl_inbox);
+    // 上行邮箱与 io 序号注入 ConnHandler
+    void create_handler(int io_index, Mailbox<CtrlUp>& ctrl_uplink_box);
     // 修改 fd 去路
     void set_fd_handler(std::function<void(int)> handler);
     // 创建 epoll 和 eventfd
@@ -36,8 +36,8 @@ public:
     // 从属入口 网关投递新连接 fd 内部切到本事件循环执行
     void add_connection(int fd);
 
-    // 中控下行邮箱 从属形态装配后供中控挂接
-    Mailbox<CtrlDown>& outbox();
+    // 本 io 的下行邮箱 从属形态装配后供中控挂接
+    Mailbox<CtrlDown>& downlink_box();
 
     // 事件循环主函数 阻塞直到服务器退出
     void loop();

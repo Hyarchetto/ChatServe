@@ -7,5 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # VS Code 智能提示，clangd / IntelliSense
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+enable_testing()
+
 add_subdirectory(src)
 add_subdirectory(server)
+add_subdirectory(test)

@@ -2,8 +2,6 @@
 # ./scripts/run.sh
 cd "$(dirname "$0")/.."
 
-echo "LAN IP: $(hostname -I | cut -d' ' -f1)"
-
 if ! ./build.sh; then
     echo "构建失败，未启动任何服务"
     exit 1

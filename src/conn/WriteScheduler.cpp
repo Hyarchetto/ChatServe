@@ -11,38 +11,32 @@
 WriteScheduler::WriteScheduler(EventLoop& loop, DelConnectionFn del_conn)
     : loop_(loop), del_connection_(std::move(del_conn)) {}
 
-// 入队高/低队列后立即排空 只由本 loop 归属线程调用
-void WriteScheduler::enqueue(const std::shared_ptr<Connection>& conn,
-                             std::string data, bool is_high_priority) {
-    if (is_high_priority) {
-        this->queue_high_.emplace(PendingResponse{conn, std::move(data)});
-    }
-    else {
-        this->queue_low_.emplace(PendingResponse{conn, std::move(data)});
-    }
-    this->drain_all();
+// 入队后立即排空 只由本 loop 归属线程调用
+void WriteScheduler::enqueue(const std::shared_ptr<Connection>& conn, std::string data) {
+    this->queue_.emplace(PendingResponse{conn, std::move(data)});
+    this->drain();
 }
 
 void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
     int fd = conn->sess_->fd_;
-    // 缓冲已超上限 先收，避免每次可写事件重复尝试一条永远追不上的连接
+    // 缓存已超上限，直接断开连接
     if (this->pending_bytes(conn) > kMaxPendingBytes) {
         this->del_connection_(conn);
         return;
     }
     auto it = this->pending_writes_.find(conn);
+    // 不存在待发送数据，返回
     if (it == this->pending_writes_.end()) {
         return;
     }
     LazyBuffer& buf = it->second;
     auto [sent, failed] = this->try_send(fd, std::string_view(buf.data(), buf.size()));
-
+    // 发送失败，断开连接
     if (failed) {
-        this->pending_writes_.erase(conn);
         this->del_connection_(conn);
         return;
     }
-
+    // 完成发送
     if (sent >= static_cast<ssize_t>(buf.size())) {
         this->pending_writes_.erase(conn);
         // 连接还存活才删除写事件
@@ -50,7 +44,7 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET);
         }
         // 缓冲发空 请求过冲刷后关闭的在此收
-        if (this->closing_.count(conn) > 0) {
+        if (this->closing_.find(conn) != this->closing_.end()) {
             this->del_connection_(conn);
         }
     }
@@ -59,7 +53,7 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
     }
 }
 
-// 冲刷后关闭 — 待写数据发完再回调 del_connection 缓冲已空则立即收
+// 数据未完全发送 — 待写数据发完再回调 del_connection 缓冲已空则立即收
 void WriteScheduler::request_close(const std::shared_ptr<Connection>& conn) {
     if (this->pending_writes_.find(conn) == this->pending_writes_.end()) {
         this->del_connection_(conn);
@@ -73,15 +67,10 @@ void WriteScheduler::remove_pending(const std::shared_ptr<Connection>& conn) {
     this->closing_.erase(conn);
 }
 
-// 高优先 TEXT 先于低优先 BINARY 排空
-void WriteScheduler::drain_all() {
-    this->drain_one(this->queue_high_);
-    this->drain_one(this->queue_low_);
-}
-
-void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
+// 排空待发队列 处理期间新入队的由下一轮收
+void WriteScheduler::drain() {
     std::queue<PendingResponse> local{};
-    std::swap(local, q);
+    std::swap(local, this->queue_);
 
     while (!local.empty()) {
         auto item = std::move(local.front());
@@ -126,7 +115,7 @@ void WriteScheduler::drain_one(std::queue<PendingResponse>& q) {
             continue;
         }
         // 本批发完且缓冲已空 请求过冲刷后关闭的在此收
-        if (this->closing_.count(item.conn_) > 0 &&
+        if (this->closing_.find(item.conn_) != this->closing_.end() &&
             this->pending_writes_.find(item.conn_) == this->pending_writes_.end()) {
             this->del_connection_(item.conn_);
         }

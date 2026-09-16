@@ -2,16 +2,15 @@
 #pragma once
 
 #include <string>
-#include <unordered_map>
 #include <sstream>
 
-#include "HttpRequest.h"
+#include "HeaderMap.h"
 
 struct HttpResponse {
     int status_ = 200;
     std::string status_text_ = "OK";
     std::string version_ = "HTTP/1.1";
-    std::unordered_map<std::string, std::string> headers_;
+    HeaderMap headers_;                              // 键均已归一化为小写
     std::string body_;
 
     // 标准序列化：状态行 + 头部 + 空行 + body
@@ -26,7 +25,7 @@ struct HttpResponse {
             oss << k << ": " << v << "\r\n";
         }
         if (!has_cl) {
-            oss << "Content-Length: " << body_.size() << "\r\n";
+            oss << "content-length: " << body_.size() << "\r\n";
         }
         // 空行
         oss << "\r\n";
@@ -37,6 +36,6 @@ struct HttpResponse {
 
     // 头部名大小写不敏感查找，大小写不同的同名字段算同一个
     bool has_header(const std::string& key) const {
-        return HttpRequest::find_header_ci(headers_, key) != nullptr;
+        return headers_.find(lowercase(key)) != headers_.end();
     }
 };

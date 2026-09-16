@@ -3,7 +3,8 @@
 #include <csignal>
 #include "../include/server/ReactorFactory.h"
 
-#define kServerPort 8080
+// 监听端口
+static constexpr int kServerPort = 8080;
 
 // io worker 数量
 static constexpr size_t kIoCount = 4;

@@ -2,14 +2,15 @@
 #include "server/CtrlDispatcher.h"
 
 #include <iostream>
+#include <stdexcept>
 #include <utility>
 
 #include "app/AppParser.h"
 #include "app/AppMessage.h"
 
 CtrlDispatcher::CtrlDispatcher(ThreadPool& works) : works_(works), app_router_(room_mgr_) {
-    // 收件箱 sink 只经中控 loop 触发 构造即绑定 线程启动前投递先进队列
-    this->inbox_ = std::make_unique<Inbox>(this->loop_,
+    // 上行邮箱 sink 只经中控 loop 触发 构造即绑定 线程启动前投递先进队列
+    this->uplink_box_ = std::make_unique<UplinkBox>(this->loop_,
         [this](CtrlUp up) { this->handle_uplink(std::move(up)); });
 }
 
@@ -17,12 +18,13 @@ CtrlDispatcher::~CtrlDispatcher() {
     this->stop();
 }
 
-// 出站表按需增长到能容纳第 io 个 io worker 须在 start 前完成
-void CtrlDispatcher::attach_outbox(size_t io, Outbox& box) {
-    if (io >= this->outboxes_.size()) {
-        this->outboxes_.resize(io + 1, nullptr);
+// 挂接第 io 个 io worker 的下行邮箱 序号须从 0 起连续无重复 须在 start 前完成
+// 跳号或重复挂接是装配错误 当场抛 表长即挂接次数 表内不含空指针
+void CtrlDispatcher::attach_downlink_box(size_t io, DownlinkBox& box) {
+    if (io != this->downlink_boxes_.size()) {
+        throw std::logic_error("io 下行邮箱挂接序号不连续");
     }
-    this->outboxes_[io] = &box;
+    this->downlink_boxes_.push_back(&box);
 }
 
 bool CtrlDispatcher::start() {
@@ -48,7 +50,7 @@ void CtrlDispatcher::request_stop() {
     this->loop_.quit();
 }
 
-// ==================== 收件箱 只在中控线程 ====================
+// ==================== 上行邮箱 只在中控线程 ====================
 void CtrlDispatcher::handle_uplink(CtrlUp up) {
     switch (up.kind_) {
         case CtrlUpKind::WS_TEXT:
@@ -59,7 +61,7 @@ void CtrlDispatcher::handle_uplink(CtrlUp up) {
             cmd.binary_ = (up.kind_ == CtrlUpKind::WS_BINARY);
             cmd.data_ = std::move(up.text_);
             // 单飞门 该 Session 已有业务在途则入队 否则置在途并提交
-            if (this->running_.count(key)) {
+            if (this->running_.find(key) != this->running_.end()) {
                 this->pending_[key].push_back(std::move(cmd));
                 break;
             }
@@ -110,7 +112,7 @@ void CtrlDispatcher::on_done(std::shared_ptr<Session> sess, std::vector<CtrlDown
     this->advance_lane(key);
 }
 
-// 业务池线程入口 只按 Session 算响应 不碰会话容器与 io 频道
+// 业务池线程入口 只按 Session 算响应 不碰会话容器与 io 邮箱
 void CtrlDispatcher::run_business(Cmd cmd) {
     std::vector<CtrlDown> frames;
     try {
@@ -124,7 +126,7 @@ void CtrlDispatcher::run_business(Cmd cmd) {
     catch (const std::exception& e) {
         std::cerr << "业务处理异常 fd=" << cmd.sess_->fd_ << " " << e.what() << std::endl;
     }
-    // 整批交还中控线程 由中控分发到各 io 频道 携带 Session 保活
+    // 整批交还中控线程 由中控分发到各 io 邮箱 携带 Session 保活
     this->loop_.post([this, sess = std::move(cmd.sess_),
                       frames = std::move(frames)]() mutable {
         this->on_done(std::move(sess), std::move(frames));
@@ -139,7 +141,7 @@ std::vector<CtrlDown> CtrlDispatcher::route(std::shared_ptr<Session> sess,
         return frames;  // io 已关 弃处理
     }
     AppMessage msg = AppParser::parse(text);
-    std::unique_lock<std::shared_mutex> lock(this->mtx_);
+    std::lock_guard<std::mutex> lock(this->mtx_);
     return this->app_router_.handle(std::move(sess), msg);
 }
 
@@ -150,7 +152,7 @@ std::vector<CtrlDown> CtrlDispatcher::route_chunk(std::shared_ptr<Session> sess,
     if (!sess->alive_) {
         return frames;  // io 已关 弃处理
     }
-    std::unique_lock<std::shared_mutex> lock(this->mtx_);
+    std::lock_guard<std::mutex> lock(this->mtx_);
     return this->app_router_.handle_chunk(std::move(sess), data);
 }
 
@@ -162,7 +164,7 @@ void CtrlDispatcher::cleanup(std::shared_ptr<Session> sess) {
 
     std::vector<CtrlDown> frames;
     {
-        std::unique_lock<std::shared_mutex> lock(this->mtx_);
+        std::lock_guard<std::mutex> lock(this->mtx_);
         frames = this->app_router_.cleanup(std::move(sess));
     }
     this->dispatch(std::move(frames));
@@ -174,7 +176,7 @@ void CtrlDispatcher::dispatch(std::vector<CtrlDown> frames) {
         return;
     }
     // 按帧目标会话自带的归属 io 攒批 每 io 一次唤醒 无表可查
-    std::vector<std::vector<CtrlDown>> grouped(this->outboxes_.size());
+    std::vector<std::vector<CtrlDown>> grouped(this->downlink_boxes_.size());
     for (auto& f : frames) {
         const int io = f.sess_->io_;
         if (!f.sess_->alive_) {
@@ -184,7 +186,7 @@ void CtrlDispatcher::dispatch(std::vector<CtrlDown> frames) {
     }
     for (size_t i = 0; i < grouped.size(); ++i) {
         if (!grouped[i].empty()) {
-            this->outboxes_[i]->post_batch(std::move(grouped[i]));
+            this->downlink_boxes_[i]->post_batch(std::move(grouped[i]));
         }
     }
 }

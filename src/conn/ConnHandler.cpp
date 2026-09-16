@@ -16,14 +16,14 @@
 #include "ws/WsUpgradeResponse.h"
 
 ConnHandler::ConnHandler(EventLoop& loop, int io_index,
-                         Mailbox<CtrlUp>& ctrl_inbox)
+                         Mailbox<CtrlUp>& ctrl_uplink_box)
     : loop_(loop)
     , io_(io_index)
     , writer_(loop, [this](const std::shared_ptr<Connection>& c) {
           this->close_connection(c);
       })
-    , outbox_(loop, [this](CtrlDown d) { this->downlink(std::move(d)); })
-    , ctrl_inbox_(ctrl_inbox) {}
+    , downlink_box_(loop, [this](CtrlDown d) { this->downlink(std::move(d)); })
+    , ctrl_uplink_box_(ctrl_uplink_box) {}
 
 // ======================================== 连接管理 ========================================
 void ConnHandler::add_connection(int fd) {
@@ -111,13 +111,11 @@ void ConnHandler::handle_client_fd(const std::shared_ptr<Connection>& conn) {
     }
 }
 
-// 施加一条 HTTP 决策到连接 与 handle_ws 对称
 // 本层是唯一同时看得见 HTTP 与 WS 的地方 升级握手在此交汇
-void ConnHandler::handle_http(const std::shared_ptr<Connection>& conn,
-                              HttpAction action) {
+void ConnHandler::handle_http(const std::shared_ptr<Connection>& conn, HttpAction action) {
     conn->read_buf_.consume(action.consumed_);
     for (auto& wire : action.responses_) {
-        this->writer_.enqueue(conn, std::move(wire), true);
+        this->writer_.enqueue(conn, std::move(wire));
     }
     bool want_close = action.close_;
     if (action.upgrade_) {
@@ -126,7 +124,7 @@ void ConnHandler::handle_http(const std::shared_ptr<Connection>& conn,
         conn->ws_mode_ = (resp.status_ == 101);
         want_close = want_close || !conn->ws_mode_;
         // 先定 ws_mode_ 再出包 出包若同步失败触发的关闭才判得对要不要报 CLOSED
-        this->writer_.enqueue(conn, resp.serialize(), true);
+        this->writer_.enqueue(conn, resp.serialize());
     }
     // 关闭意图在全部回包入队后统一表达 冲刷完由写引擎回调回收
     if (want_close) {
@@ -135,11 +133,10 @@ void ConnHandler::handle_http(const std::shared_ptr<Connection>& conn,
 }
 
 // ======================================== WS 决策施加 ========================================
-void ConnHandler::handle_ws(const std::shared_ptr<Connection>& conn,
-                            WsAction action) {
+void ConnHandler::handle_ws(const std::shared_ptr<Connection>& conn, WsAction action) {
     conn->read_buf_.consume(action.consumed_);
     for (auto& wire : action.responses_) {
-        this->writer_.enqueue(conn, std::move(wire), true);
+        this->writer_.enqueue(conn, std::move(wire));
     }
     // 上行中控 文本消息与二进制分块各按类型上报
     this->uplink_messages(conn, std::move(action.messages_), false);
@@ -152,7 +149,7 @@ void ConnHandler::handle_ws(const std::shared_ptr<Connection>& conn,
 
 // ======================================== 上行 ========================================
 void ConnHandler::uplink(CtrlUp up) {
-    this->ctrl_inbox_.post(std::move(up));
+    this->ctrl_uplink_box_.post(std::move(up));
 }
 
 // 上行一批应用消息 文本或二进制分块 按入队序逐条上报
@@ -174,13 +171,12 @@ void ConnHandler::downlink(CtrlDown down) {
         return;  // 目标已关闭 弃帧
     }
     auto& conn = it->second;
-    // 二进制文件分块低优先 文本高优先
     if (down.binary_) {
         std::string frame = WsFrame::build(WsOpcode::BINARY, std::move(down.text_));
-        this->writer_.enqueue(conn, std::move(frame), false);
+        this->writer_.enqueue(conn, std::move(frame));
     }
     else {
         std::string frame = WsFrame::build(WsOpcode::TEXT, std::move(down.text_));
-        this->writer_.enqueue(conn, std::move(frame), true);
+        this->writer_.enqueue(conn, std::move(frame));
     }
 }

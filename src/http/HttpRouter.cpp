@@ -7,7 +7,7 @@ HttpRouter::HttpRouter() {
     // 注册默认路由
     on("/", [](const HttpRequest&) -> HttpResponse {
         HttpResponse resp;
-        resp.headers_["Content-Type"] = "text/html; charset=utf-8";
+        resp.headers_["content-type"] = "text/html; charset=utf-8";
         resp.body_ = "<html><body><h1>ChatServe</h1><p>聊天服务器正在运行</p></body></html>";
         return resp;
     });

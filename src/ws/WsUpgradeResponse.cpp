@@ -35,8 +35,8 @@ HttpResponse WsUpgradeResponse::build(const HttpRequest& req) {
     HttpResponse resp;
     resp.status_ = 101;
     resp.status_text_ = "Switching Protocols";
-    resp.headers_["Upgrade"] = "websocket";
-    resp.headers_["Connection"] = "Upgrade";
-    resp.headers_["Sec-WebSocket-Accept"] = base64.substr(0, 28);
+    resp.headers_["upgrade"] = "websocket";
+    resp.headers_["connection"] = "Upgrade";
+    resp.headers_["sec-websocket-accept"] = base64.substr(0, 28);
     return resp;
 }
