@@ -13,7 +13,10 @@
 
 class ThreadPool {
 public:
-    ThreadPool(size_t thread_num = std::thread::hardware_concurrency());
+    // 默认 4 条
+    static constexpr size_t kDefaultThreadNum = 4;
+
+    ThreadPool(size_t thread_num = kDefaultThreadNum);
     ~ThreadPool();
 
     ThreadPool(const ThreadPool&) = delete;
@@ -23,29 +26,24 @@ public:
     template<class F, class ...Args>
     std::future<typename std::invoke_result_t<F, Args...>> submit(F&& f, Args&&... args);
 
-    // 非阻塞提交，失败返回 false
-    template<class F, class ...Args>
-    bool try_submit(F&& f, Args&&... args);
+    // 投递一条不需要结果的任务
+    // submit 每次都要造 packaged_task 与 future 的共享状态 不要结果的调用方是白花这笔
+    template<class F>
+    void post(F&& f);
+
+    // 投递一批任务，整批只加一次队列锁、只唤醒一次
+    void post_batch(std::vector<std::function<void()>> tasks);
 
     void shutdown();
-    void shutdown_now();
-
-    size_t get_thread_num() const;
-    size_t task_count() const;
-    bool is_running() const;
-    // 等当前队列与在途任务做完
-    // 池已停止时 worker 都退了，不会再有人唤醒等待方，直接返回
-    void wait_all();
 
 private:
     std::vector<std::thread> workers_;
     std::queue<std::function<void()>> tasks_;
-    mutable std::mutex queue_mutex_;
+    std::mutex queue_mutex_;
     std::condition_variable condition_;
 
     static constexpr int kMaxTaskNum = 1024;
     std::atomic<bool> stop_{false};
-    size_t active_tasks_{0};
 
     void worker_loop(size_t index);
 };
@@ -65,39 +63,32 @@ std::future<typename std::invoke_result_t<F, Args...>> ThreadPool::submit(F&& f,
 
     {
         std::unique_lock<std::mutex> lock(this->queue_mutex_);
+        // 两道门都在主流程之前，放行后才入队
         if (this->stop_.load(std::memory_order_acquire)) {
             throw std::runtime_error("线程池已失效");
         }
-
-        if (this->tasks_.size() < this->kMaxTaskNum) {
-            this->tasks_.emplace([task = std::move(task)]() mutable { (*task)(); });
-        } 
-        else {
+        if (this->tasks_.size() >= this->kMaxTaskNum) {
             throw std::runtime_error("任务队列已满");
         }
+        this->tasks_.emplace([task = std::move(task)]() mutable { (*task)(); });
     }
+    // 一条任务一条 worker，多叫醒一个也只是空转一轮再睡回去
     this->condition_.notify_one();
     return res;
 }
 
-template<class F, class ...Args>
-bool ThreadPool::try_submit(F&& f, Args&&... args) {
-    using return_type = typename std::invoke_result_t<F, Args...>;
-
-    auto task = std::make_shared<std::packaged_task<return_type()>>(
-        [f = std::forward<F>(f), args = std::make_tuple(std::forward<Args>(args)...)]() mutable
-            -> return_type {
-            return std::apply(std::move(f), std::move(args));
-        }
-    );
-
+template<class F>
+void ThreadPool::post(F&& f) {
     {
         std::unique_lock<std::mutex> lock(this->queue_mutex_);
-        if (this->stop_.load(std::memory_order_acquire) || this->tasks_.size() >= this->kMaxTaskNum) {
-            return false;
+        // 两道门都在主流程之前，放行后才入队
+        if (this->stop_.load(std::memory_order_acquire)) {
+            throw std::runtime_error("线程池已失效");
         }
-        this->tasks_.emplace([task = std::move(task)]() mutable { (*task)(); });
+        if (this->tasks_.size() >= this->kMaxTaskNum) {
+            throw std::runtime_error("任务队列已满");
+        }
+        this->tasks_.emplace(std::forward<F>(f));
     }
     this->condition_.notify_one();
-    return true;
 }

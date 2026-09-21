@@ -135,11 +135,17 @@ bool EventLoop::mod_event(int fd, uint32_t events) {
 
 // 入队后写 eventfd 唤醒 epoll_wait 取件 不判线程 本 loop 线程调也只是入队
 void EventLoop::post(std::function<void()> cb) {
+    bool need_wake = false;
     {
         std::lock_guard<std::mutex> lock(this->mtx_functors_);
         this->pending_functors_.push_back(std::move(cb));
+        // 已有待办在途 排空时会把这条一并取走 不必再写一次 eventfd
+        need_wake = !this->draining_;
+        this->draining_ = true;
     }
-    this->wakeup();
+    if (need_wake) {
+        this->wakeup();
+    }
 }
 
 // 写入 eventfd 来唤醒 epoll_wait
@@ -166,15 +172,23 @@ void EventLoop::handle_eventfd() {
 }
 
 // 执行所有待办回调
+// 排空到确实为空才放行唤醒 执行期间新投进来的由下一轮取走
+// 两个队列互换 就绪的那条留着重用 免得每轮排空都重新分配
 void EventLoop::do_pending_functors() {
-    std::vector<std::function<void()>> functors;
-    {
-        // 先加锁把 pending_functors_ 的数据交换到局部变量中，减少锁的持有时间
-        std::lock_guard<std::mutex> lock(this->mtx_functors_);
-        functors.swap(this->pending_functors_);
-    }
-    // 完成所有剩余回调函数
-    for (auto& f : functors) {
-        f();
+    while (true) {
+        {
+            // 先加锁把 pending_functors_ 的数据交换到就绪队列，减少锁的持有时间
+            std::lock_guard<std::mutex> lock(this->mtx_functors_);
+            if (this->pending_functors_.empty()) {
+                this->draining_ = false;
+                return;
+            }
+            this->ready_functors_.swap(this->pending_functors_);
+        }
+        // 完成这一批回调函数
+        for (auto& f : this->ready_functors_) {
+            f();
+        }
+        this->ready_functors_.clear();
     }
 }

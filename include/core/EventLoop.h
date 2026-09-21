@@ -54,6 +54,7 @@ public:
 
     // 把回调投递到本循环所属线程执行 跨线程安全
     // 只入队并唤醒 不保证立即执行 本 loop 线程自己调也一样入队
+    // 本线程已有待办在途时只入队不再唤醒 重复唤醒由 draining_ 合并掉
     void post(std::function<void()> cb);
 
     // 写入 eventfd 来唤醒 epoll_wait 使之立刻返回
@@ -76,8 +77,15 @@ private:
     // 保护 pending_functors_ 的互斥锁
     std::mutex mtx_functors_;
 
-    // 线程池投回来的待办回调队列，handle_eventfd 里会取出来执行
+    // 等待队列，线程池投回来的待办回调都追加到这里，锁保护
     std::vector<std::function<void()>> pending_functors_;
+
+    // 就绪队列，攒齐了正要执行的那批，与 pending_functors_ 互换复用容量
+    // 只本 loop 线程碰，留着不销毁是免得每轮排空都重新分配
+    std::vector<std::function<void()>> ready_functors_;
+
+    // 有排空在途，与 pending_functors_ 同锁保护，投递方据此省掉重复的 eventfd 写
+    bool draining_ = false;
 
     std::atomic<bool> quit_ = false;   // 退出标志，loop 函数每轮都会检查
 

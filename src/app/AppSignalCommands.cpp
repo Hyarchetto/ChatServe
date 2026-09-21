@@ -1,6 +1,7 @@
 // 应用层命令路由 — WebRTC 信令中继域
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "app/AppRouter.h"
@@ -24,7 +25,9 @@ std::vector<CtrlDown> AppRouter::relay_signal(std::shared_ptr<Session> sess, con
                   << " for param '" << msg.param(0) << "'" << std::endl;
         return results;
     }
-    auto target = this->find_peer(sess->room_, target_fd);
+    // 未加入房间则房间查不到 转发自然空转
+    auto room = this->room_mgr_.find_room(sess->room_);
+    auto target = find_peer(room, target_fd);
     if (!target) {
         return results;
     }

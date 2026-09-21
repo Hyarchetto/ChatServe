@@ -9,9 +9,11 @@
 #include "app/AppMessage.h"
 
 CtrlDispatcher::CtrlDispatcher(ThreadPool& works) : works_(works), app_router_(room_mgr_) {
-    // 上行邮箱 sink 只经中控 loop 触发 构造即绑定 线程启动前投递先进队列
+    // 两个邮箱的 sink 都只经中控 loop 触发 构造即绑定 线程启动前投递先进队列
     this->uplink_box_ = std::make_unique<UplinkBox>(this->loop_,
-        [this](CtrlUp up) { this->handle_uplink(std::move(up)); });
+        [this](std::vector<CtrlUp>& ups) { this->handle_uplink(ups); });
+    this->result_box_ = std::make_unique<ResultBox>(this->loop_,
+        [this](std::vector<CtrlResult>& results) { this->handle_result(results); });
 }
 
 CtrlDispatcher::~CtrlDispatcher() {
@@ -51,123 +53,165 @@ void CtrlDispatcher::request_stop() {
 }
 
 // ==================== 上行邮箱 只在中控线程 ====================
-void CtrlDispatcher::handle_uplink(CtrlUp up) {
-    switch (up.kind_) {
-        case CtrlUpKind::WS_TEXT:
-        case CtrlUpKind::WS_BINARY: {
-            Session* key = up.sess_.get();
-            Cmd cmd;
-            cmd.sess_ = std::move(up.sess_);
-            cmd.binary_ = (up.kind_ == CtrlUpKind::WS_BINARY);
-            cmd.data_ = std::move(up.text_);
-            // 单飞门 该 Session 已有业务在途则入队 否则置在途并提交
-            if (this->running_.find(key) != this->running_.end()) {
-                this->pending_[key].push_back(std::move(cmd));
+// 一轮拿到整批 本轮要投池的命令先攒在 cmds 里 循环走完一次投进去
+// 逐条 post 的话每一条都要抢一次池的队列锁唤醒一次 worker 批量越大亏得越多
+void CtrlDispatcher::handle_uplink(std::vector<CtrlUp>& ups) {
+    std::vector<Cmd> cmds;
+    cmds.reserve(ups.size());
+    for (auto& up : ups) {
+        switch (up.kind_) {
+            case CtrlUpKind::WS_TEXT:
+            case CtrlUpKind::WS_BINARY: {
+                Cmd cmd;
+                cmd.sess_ = std::move(up.sess_);
+                cmd.kind_ = (up.kind_ == CtrlUpKind::WS_BINARY) ? Cmd::Kind::WS_BINARY
+                                                                : Cmd::Kind::WS_TEXT;
+                cmd.data_ = std::move(up.text_);
+                this->enqueue_cmd(std::move(cmd), cmds);
                 break;
             }
-            this->running_.insert(key);
-            this->submit_cmd(std::move(cmd));
-            break;
-        }
-        case CtrlUpKind::CLOSED: {
-            this->cleanup(std::move(up.sess_));
-            break;
+            case CtrlUpKind::CLOSED: {
+                this->handle_close(std::move(up.sess_), cmds);
+                break;
+            }
         }
     }
+    this->submit_cmds(std::move(cmds));
+}
+
+// 连接关闭 队列里那些命令对已死的连接没有意义 整批丢掉
+// 有在途业务就只登记 等它跑完由 advance_lane 接着收尾 没有则当场收尾
+void CtrlDispatcher::handle_close(std::shared_ptr<Session> sess, std::vector<Cmd>& cmds) {
+    Session* key = sess.get();
+    auto [it, inserted] = this->lanes_.try_emplace(key);
+    it->second.closing_ = true;
+    if (!inserted) {
+        it->second.pending_.clear();
+        return;
+    }
+    it->second.sess_ = std::move(sess);
+    this->advance_lane(key, cmds);
 }
 
 // ==================== 单飞门 只在中控线程 ====================
-void CtrlDispatcher::submit_cmd(Cmd cmd) {
-    // key 先取 提交失败时 cmd 已被移入 取不到
+// 该 Session 已有操作在途则入队 否则当即开跑并攒进 cmds 待本轮一次投池
+void CtrlDispatcher::enqueue_cmd(Cmd cmd, std::vector<Cmd>& cmds) {
     Session* key = cmd.sess_.get();
-    try {
-        this->works_.submit([this, cmd = std::move(cmd)]() mutable {
+    auto [it, inserted] = this->lanes_.try_emplace(key);
+    if (!inserted) {
+        it->second.pending_.push_back(std::move(cmd));
+        return;
+    }
+    it->second.sess_ = cmd.sess_;    // 车道持有会话 拷贝在前 Cmd 那份随后移走
+    cmds.push_back(std::move(cmd));  // 新车道 这条命令当即开跑
+}
+
+// 一条操作结束时推进一步 收尾优先于排队 两者都没有则撤销登记
+// 有在途操作就有车道 键必在表中
+void CtrlDispatcher::advance_lane(Session* key, std::vector<Cmd>& cmds) {
+    auto it = this->lanes_.find(key);
+    Lane& lane = it->second;
+    if (lane.closing_) {
+        lane.closing_ = false;  // 排定即清 不清收尾会反复排
+        cmds.push_back(Cmd{lane.sess_, Cmd::Kind::CLEANUP, {}});
+        return;
+    }
+    // 如果 pending_ 为空，说明代办业务已完全处理
+    if (lane.pending_.empty()) {
+        // 清理并返回
+        this->lanes_.erase(it);
+        return;
+    }
+    cmds.push_back(std::move(lane.pending_.front()));
+    lane.pending_.pop_front();
+}
+
+// 一次把攒下的命令推进池 调用方须已在 lanes_ 中为这些 Session 占好位
+void CtrlDispatcher::submit_cmds(std::vector<Cmd> cmds) {
+    if (cmds.empty()) {
+        return;
+    }
+    // key 先取 提交失败时 cmds 已被移入 取不到
+    std::vector<Session*> keys;
+    std::vector<std::function<void()>> tasks;
+    keys.reserve(cmds.size());
+    tasks.reserve(cmds.size());
+    for (auto& cmd : cmds) {
+        keys.push_back(cmd.sess_.get());
+        tasks.push_back([this, cmd = std::move(cmd)]() mutable {
             this->run_business(std::move(cmd));
         });
     }
+    try {
+        this->works_.post_batch(std::move(tasks));
+    }
     catch (const std::exception& e) {
         std::cerr << "中控提交业务失败 " << e.what() << std::endl;
-        this->running_.erase(key);
-    }
-}
-
-void CtrlDispatcher::advance_lane(Session* key) {
-    auto it = this->pending_.find(key);
-    if (it == this->pending_.end() || it->second.empty()) {
-        if (it != this->pending_.end()) {
-            this->pending_.erase(it);
+        // 这批会话的通道废了 车道一并撤掉 不留没人推进的队列
+        for (Session* key : keys) {
+            this->lanes_.erase(key);
         }
-        this->running_.erase(key);
-        return;
     }
-    Cmd cmd = std::move(it->second.front());
-    it->second.pop_front();
-    this->submit_cmd(std::move(cmd));
 }
 
-// 业务完成回中控线程 先做唯一分发 再推进该 Session 单飞门
-void CtrlDispatcher::on_done(std::shared_ptr<Session> sess, std::vector<CtrlDown> frames) {
-    Session* key = sess.get();  // sess 持引用 期间对象必存活 指针稳定
+// 回程邮箱 sink 只在中控线程执行 一轮拿到整批响应
+// 整批的帧合成一串一次分拣一次投放 整批的推进结果一次投池
+void CtrlDispatcher::handle_result(std::vector<CtrlResult>& results) {
+    std::vector<CtrlDown> frames;
+    std::vector<Cmd> cmds;
+    for (auto& r : results) {
+        for (auto& f : r.frames_) {
+            frames.push_back(std::move(f));
+        }
+        this->advance_lane(r.sess_.get(), cmds);
+    }
     this->dispatch(std::move(frames));
-    this->advance_lane(key);
+    this->submit_cmds(std::move(cmds));
 }
 
 // 业务池线程入口 只按 Session 算响应 不碰会话容器与 io 邮箱
 void CtrlDispatcher::run_business(Cmd cmd) {
+    std::shared_ptr<Session> sess = std::move(cmd.sess_);
     std::vector<CtrlDown> frames;
     try {
-        if (cmd.binary_) {
-            frames = this->route_chunk(cmd.sess_, std::move(cmd.data_));
-        }
-        else {
-            frames = this->route(cmd.sess_, cmd.data_);
+        switch (cmd.kind_) {
+            case Cmd::Kind::WS_TEXT:
+                frames = this->route(sess, cmd.data_);
+                break;
+            case Cmd::Kind::WS_BINARY:
+                frames = this->route_chunk(sess, cmd.data_);
+                break;
+            case Cmd::Kind::CLEANUP:
+                frames = this->app_router_.cleanup(sess);
+                break;
         }
     }
     catch (const std::exception& e) {
-        std::cerr << "业务处理异常 fd=" << cmd.sess_->fd_ << " " << e.what() << std::endl;
+        std::cerr << "业务处理异常 fd=" << sess->fd_ << " " << e.what() << std::endl;
     }
-    // 整批交还中控线程 由中控分发到各 io 邮箱 携带 Session 保活
-    this->loop_.post([this, sess = std::move(cmd.sess_),
-                      frames = std::move(frames)]() mutable {
-        this->on_done(std::move(sess), std::move(frames));
-    });
+    // 交还中控线程 中控按轮攒批分拣 携带 Session 保活
+    this->result_box_->post(CtrlResult{std::move(sess), std::move(frames)});
 }
 
-// 路由一条命令 委托 AppRouter 执行业务 持业务串行门
+// 路由一条文本命令 委托 AppRouter 执行业务
 std::vector<CtrlDown> CtrlDispatcher::route(std::shared_ptr<Session> sess,
                                             const std::string& text) {
     std::vector<CtrlDown> frames;
     if (!sess->alive_) {
-        return frames;  // io 已关 弃处理
+        return frames;  // io 已关 弃处理 收尾另有 CLEANUP 一条
     }
     AppMessage msg = AppParser::parse(text);
-    std::lock_guard<std::mutex> lock(this->mtx_);
     return this->app_router_.handle(std::move(sess), msg);
 }
 
-// 处理一个二进制分块 持业务锁执行
+// 处理一个二进制分块 委托 AppRouter 转发给下载方
 std::vector<CtrlDown> CtrlDispatcher::route_chunk(std::shared_ptr<Session> sess,
                                                   const std::string& data) {
     std::vector<CtrlDown> frames;
     if (!sess->alive_) {
-        return frames;  // io 已关 弃处理
+        return frames;  // io 已关 弃处理 收尾另有 CLEANUP 一条
     }
-    std::lock_guard<std::mutex> lock(this->mtx_);
     return this->app_router_.handle_chunk(std::move(sess), data);
-}
-
-// 连接清理 只中控线程调用 回收单飞门 委托业务清理
-void CtrlDispatcher::cleanup(std::shared_ptr<Session> sess) {
-    Session* key = sess.get();
-    this->pending_.erase(key);
-    this->running_.erase(key);
-
-    std::vector<CtrlDown> frames;
-    {
-        std::lock_guard<std::mutex> lock(this->mtx_);
-        frames = this->app_router_.cleanup(std::move(sess));
-    }
-    this->dispatch(std::move(frames));
 }
 
 // ==================== 唯一分发点 只在中控线程 ====================

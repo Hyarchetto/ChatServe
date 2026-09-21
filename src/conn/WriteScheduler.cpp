@@ -55,7 +55,7 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
 
 // 数据未完全发送 — 待写数据发完再回调 del_connection 缓冲已空则立即收
 void WriteScheduler::request_close(const std::shared_ptr<Connection>& conn) {
-    if (this->pending_writes_.find(conn) == this->pending_writes_.end()) {
+    if (this->pending_bytes(conn) == 0) {
         this->del_connection_(conn);
         return;
     }
@@ -84,7 +84,7 @@ void WriteScheduler::drain() {
 
         // 该连接已有未发完数据 先追加保持帧顺序 再立刻尝试发送
         // 追加前判上限 慢客户端让缓冲一直涨，超限直接断开不再接收新帧
-        if (this->pending_writes_.find(item.conn_) != this->pending_writes_.end()) {
+        if (this->pending_bytes(item.conn_) != 0) {
             if (this->pending_bytes(item.conn_) > kMaxPendingBytes) {
                 this->del_connection_(item.conn_);
                 continue;
@@ -115,8 +115,8 @@ void WriteScheduler::drain() {
             continue;
         }
         // 本批发完且缓冲已空 请求过冲刷后关闭的在此收
-        if (this->closing_.find(item.conn_) != this->closing_.end() &&
-            this->pending_writes_.find(item.conn_) == this->pending_writes_.end()) {
+        if (this->closing_.find(item.conn_) != this->closing_.end() && 
+            this->pending_bytes(item.conn_) == 0) {
             this->del_connection_(item.conn_);
         }
     }

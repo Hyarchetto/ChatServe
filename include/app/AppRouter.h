@@ -1,6 +1,8 @@
 // 应用层命令路由 — 聊天/信令/文件传输三条命令域共用一张命令表
-// 跑在业务线程池或中控持锁调用 只认 Session 控制块与持有的 RoomManager
+// 跑在业务线程池 只认 Session 控制块与持有的 RoomManager
 // 输出按 Session 寻址的应用文本 组帧由 io 侧完成
+// 同一 Session 的命令与收尾由中控单飞门串行 类内不需要串行锁
+// 房间由调用方在栈上持 shared_ptr 存活 传输管理器随房间走
 // 表机制与共享助手在本类 三条命令域各自占一个 cpp
 #pragma once
 
@@ -17,7 +19,7 @@
 
 class AppRouter {
 public:
-    // 处理器 持锁调用 房间/传输状态经 room_mgr_ 取用
+    // 处理器 房间/传输状态经 room_mgr_ 取用
     using Handler = std::function<std::vector<CtrlDown>(std::shared_ptr<Session> sess,
                                                         const AppMessage& msg)>;
 
@@ -42,21 +44,19 @@ private:
     void register_signalling();
     void register_transfer();
 
-    // 广播帧给 live 列表里除 except 外的所有 Session
-    static void broadcast_except(const std::vector<std::shared_ptr<Session>>& live, Session* except,
+    // 广播帧给成员快照里除 except 外的所有 Session
+    static void broadcast_except(const std::vector<Room::Member>& live, Session* except,
                                  const std::string& text, std::vector<CtrlDown>& results);
-    // 广播帧给房间里除 except 外的所有 Session，房间不存在直接弃包
-    void broadcast_to_room(const std::string& room_id, Session* except,
-                           const std::string& text, std::vector<CtrlDown>& results);
-    // 房间内按 fd 找目标 Session 房间查不到即无对象可发 只查不建
-    std::shared_ptr<Session> find_peer(const std::string& room_id, int target_fd);
+    // 广播帧给房间里除 except 外的所有 Session，房间为空直接弃包
+    static void broadcast_to_room(const std::shared_ptr<Room>& room, Session* except,
+                                  const std::string& text, std::vector<CtrlDown>& results);
+    // 房间内按 fd 找目标 Session 房间为空即无对象可发
+    static std::shared_ptr<Session> find_peer(const std::shared_ptr<Room>& room, int target_fd);
     // 解析 target_fd 并把 payload 转发给同房间的目标连接 帧里换发送方为自己的 fd
     std::vector<CtrlDown> relay_signal(std::shared_ptr<Session> sess, const AppMessage& msg,
                                        const std::string& command, size_t payload_count);
-    // 房间的文件传输管理器，只查不建，传输状态归房间
-    TransferManager* find_transfer_mgr(const std::string& room_id);
     // MEMBERS 列表文本 fd:nick 逗号分隔 客户端昵称表据此建立
-    static std::string build_members_frame(const std::vector<std::shared_ptr<Session>>& live);
+    static std::string build_members_frame(const std::vector<Room::Member>& live);
     // 上传方断线导致的传输失败文案
     static constexpr char kUploaderGone[] = "上传方已离开，下载失败";
     // 一条 DWERR 文本 寻址由调用点决定

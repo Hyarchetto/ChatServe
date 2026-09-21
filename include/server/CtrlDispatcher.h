@@ -1,19 +1,25 @@
 // CtrlDispatcher — 中控 一条线程做唯一分发 并串行调度业务
 // 分层单向解耦：
+//   io 线程只管连接与协议层的出入 剥完帧用 Session 控制块上报 排空自己邮箱写自己连接
+//   中控是两者之间唯一的一跳 归属 io 随 Session 自带 分发时直接读 放进对应 io 邮箱并唤醒
 //   业务线程池不知道 io 线程存在 只按 Session 控制块算响应 整批交还中控线程
-//   中控不持会话表 归属 io 随 Session 自带 分发时直接读 放进对应 io 邮箱并唤醒
-//   io 线程只管 socket 生命周期 用 Connection->sess_ 上报 排空自己邮箱写自己连接
-// 业务逻辑集中在 AppRouter 命令表 与 RoomManager 房间 均复用已验证算法
-// 命令经单飞门保证顺序 同一 Session 至多一条在池 业务持单把锁串行房间操作
+// 业务逻辑集中在 AppRouter 命令表 与 RoomManager 房间
+// 单飞门保证同一 Session 至多一条命令在池 顺序即上报序 房间与传输状态各自的锁保护
+// 连接关闭也走这道门 收尾排在在途业务之后 队列里那些对死连接没意义的命令直接丢
+//
+// 两个方向都攒批 交界的次数按批算不按条算
+//   上行 一轮排空攒出整批命令 末尾一次投进池 不逐条抢池的队列锁
+//   回程 走 result_box_ 池线程算完投回来 中控一轮拿到整批响应 合起来分拣一次投一次 io
+
 #pragma once
 
+#include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "../ctrl/Session.h"
@@ -50,32 +56,57 @@ public:
     void request_stop();
 
 private:
-    // 一条待处理的上行 携带会话保活
+    // 一条待处理的操作 携带会话保活
     struct Cmd {
+        enum class Kind : uint8_t {
+            WS_TEXT,    // 一条 WS 文本应用消息 已剥帧
+            WS_BINARY,  // 一条 WS 二进制分块 含 20B 传输头
+            CLEANUP,    // 连接关闭后的业务收尾
+        };
+
         std::shared_ptr<Session> sess_;             // 会话 持引用让队列中的待办不被释放
-        bool binary_ = false;                       // 是否为二进制分块
-        std::string data_;                          // 应用原文或分块原始字节
+        Kind kind_ = Kind::WS_TEXT;
+        std::string data_;                          // 应用原文或分块原始字节 收尾时为空
     };
 
-    // 上行邮箱 sink 只在中控线程执行
-    void handle_uplink(CtrlUp up);
+    // 一条算完的业务响应 携带会话保活
+    struct CtrlResult {
+        std::shared_ptr<Session> sess_;
+        std::vector<CtrlDown> frames_;
+    };
 
-    // 提交一条命令进业务池 调用方须已把该 Session 标为 running
-    void submit_cmd(Cmd cmd);
-    // 单飞门推进 只中控线程调用 分发完成后拉下一条
-    void advance_lane(Session* key);
-    // 业务任务完成回中控线程 先分发再推进单飞门
-    void on_done(std::shared_ptr<Session> sess, std::vector<CtrlDown> frames);
-    // 业务池线程入口 委托 AppRouter 计算响应
+    using ResultBox = Mailbox<CtrlResult>;          // 池投 中控收
+
+    // 一条车道的全部状态 车道即一条会话的串行通道
+    // 有键即有命令在途 键消失即车道空闲 键只作身份 会话由值持有到那一刻
+    struct Lane {
+        std::shared_ptr<Session> sess_;   // 车道持有会话
+        std::deque<Cmd> pending_;         // 排队等跑的普通命令
+        bool closing_ = false;            // 欠一条收尾 排定后清掉
+    };
+
+    // 上行邮箱 sink 只在中控线程执行 一轮拿到整批
+    void handle_uplink(std::vector<CtrlUp>& ups);
+    // 回程邮箱 sink 只在中控线程执行 一轮拿到整批响应
+    // 整批的帧合起来分拣一次 整批的推进结果一次投池
+    void handle_result(std::vector<CtrlResult>& results);
+    // 连接关闭 只中控线程执行 登记待收尾并把要收尾的命令攒进 cmds
+    void handle_close(std::shared_ptr<Session> sess, std::vector<Cmd>& cmds);
+
+    // 单飞门入口 该 Session 已有操作在途则入队 否则当即开跑并攒进 cmds
+    void enqueue_cmd(Cmd cmd, std::vector<Cmd>& cmds);
+    // 单飞门推进 只中控线程调用 有待收尾则优先 否则拉下一条 结果攒进 cmds
+    void advance_lane(Session* key, std::vector<Cmd>& cmds);
+    // 把攒下的一批命令一次投进业务池
+    void submit_cmds(std::vector<Cmd> cmds);
+    // 业务池线程入口 按 kind 委托 AppRouter 算响应
     void run_business(Cmd cmd);
-    // 路由一条文本命令 持业务锁执行
+    // 路由一条文本命令
     std::vector<CtrlDown> route(std::shared_ptr<Session> sess,
                                 const std::string& text);
-    // 处理一个二进制分块 持业务锁执行
+    // 处理一个二进制分块
     std::vector<CtrlDown> route_chunk(std::shared_ptr<Session> sess,
                                       const std::string& data);
-    // 连接清理 只中控线程调用 回收单飞门 委托业务清理广播
-    void cleanup(std::shared_ptr<Session> sess);
 
     // 唯一分发点 只中控线程调用 按帧目标会话自带的归属 io 放进对应邮箱
     void dispatch(std::vector<CtrlDown> frames);
@@ -83,17 +114,16 @@ private:
     ThreadPool& works_;                             // 业务线程池 工厂持有
     EventLoop loop_;
     std::unique_ptr<UplinkBox> uplink_box_;         // io→中控
-    std::vector<DownlinkBox*> downlink_boxes_;      // 中控→io 索引即 io 序号 start 前固定
+    std::unique_ptr<ResultBox> result_box_;         // 池→中控
+    std::vector<DownlinkBox*> downlink_boxes_;      // 中控→io
     std::thread thread_;
     bool started_ = false;
 
-    // 中控线程专用 无锁 均只在有业务在途时存在 由 cleanup 回收
-    std::unordered_map<Session*, std::deque<Cmd>> pending_;              // Session → 待处理命令
-    std::unordered_set<Session*> running_;                               // Session 在途标记
+    // 中控线程专用 无锁 登记与撤销都只经 enqueue_cmd 与 advance_lane 两处
+    std::unordered_map<Session*, Lane> lanes_;      // 会话 → 车道状态
 
     // 业务层 复用已验证算法 房间/传输/命令逻辑不在此重复
     // room_mgr_ 必须排在 app_router_ 之前 后者构造时按引用绑定它 声明序即析构逆序
     RoomManager room_mgr_;                          // 房间与房间内传输管理器
     AppRouter app_router_;                          // 命令表与业务 handler 持 room_mgr_ 引用
-    std::mutex mtx_;                                // 业务串行门 房间与身份一致性的唯一入口
 };

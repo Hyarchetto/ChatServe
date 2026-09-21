@@ -49,8 +49,8 @@ private:
     // 上行一批应用消息 文本或二进制分块 按入队序逐条上报
     void uplink_messages(const std::shared_ptr<Connection>& conn,
                          std::vector<std::string> items, bool binary);
-    // 下行邮箱 sink 只在本 io 线程执行
-    void downlink(CtrlDown down);
+    // 下行邮箱 sink 只在本 io 线程执行 一次拿到整批 逐条 move 走内容
+    void downlink_batch(std::vector<CtrlDown>& downs);
 
     EventLoop& loop_;                   // 本线程事件循环 writer_ 与 downlink_box_ 按引用绑定它
     int io_ = 0;                        // 本 worker 的 io 序号

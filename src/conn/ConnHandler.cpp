@@ -22,7 +22,9 @@ ConnHandler::ConnHandler(EventLoop& loop, int io_index,
     , writer_(loop, [this](const std::shared_ptr<Connection>& c) {
           this->close_connection(c);
       })
-    , downlink_box_(loop, [this](CtrlDown d) { this->downlink(std::move(d)); })
+    , downlink_box_(loop, [this](std::vector<CtrlDown>& ds) {
+          this->downlink_batch(ds);
+      })
     , ctrl_uplink_box_(ctrl_uplink_box) {}
 
 // ======================================== 连接管理 ========================================
@@ -165,18 +167,15 @@ void ConnHandler::uplink_messages(const std::shared_ptr<Connection>& conn,
 }
 
 // ======================================== 下行 ========================================
-void ConnHandler::downlink(CtrlDown down) {
-    auto it = this->conns_.find(down.sess_.get());
-    if (it == this->conns_.end()) {
-        return;  // 目标已关闭 弃帧
-    }
-    auto& conn = it->second;
-    if (down.binary_) {
-        std::string frame = WsFrame::build(WsOpcode::BINARY, std::move(down.text_));
-        this->writer_.enqueue(conn, std::move(frame));
-    }
-    else {
-        std::string frame = WsFrame::build(WsOpcode::TEXT, std::move(down.text_));
-        this->writer_.enqueue(conn, std::move(frame));
+// 整批一次处理 按目标连接逐条组帧投给写调度
+void ConnHandler::downlink_batch(std::vector<CtrlDown>& downs) {
+    for (auto& down : downs) {
+        auto it = this->conns_.find(down.sess_.get());
+        if (it == this->conns_.end()) {
+            continue;  // 目标已关闭 弃帧
+        }
+        const WsOpcode opcode = down.binary_ ? WsOpcode::BINARY : WsOpcode::TEXT;
+        this->writer_.enqueue(it->second,
+                              WsFrame::build(opcode, std::move(down.text_)));
     }
 }

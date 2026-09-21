@@ -29,7 +29,14 @@ AppMessage AppParser::parse(const std::string& data) {
 
 std::string AppParser::build_frame(const std::string& command,
                                    const std::vector<std::string>& params) {
-    std::string result = command;
+    // 帧长一次算清 省掉逐段 += 的几次重分配
+    size_t total = command.size();
+    for (const auto& p : params) {
+        total += 1 + p.size();
+    }
+    std::string result;
+    result.reserve(total);
+    result = command;
     for (const auto& p : params) {
         result += kDelimiter;
         result += p;

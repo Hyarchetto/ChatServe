@@ -23,7 +23,7 @@ struct FileRegistration {
     std::string file_id_;                           // 文件句柄
     std::string filename_;                          // 文件名
     size_t filesize_ = 0;                           // 文件大小
-    std::shared_ptr<Session> uploader_;          // 上传者连接 房间号取 uploader_->room_
+    std::shared_ptr<Session> uploader_;          // 上传者连接
 };
 
 // 传输会话，为每次传输都建立一次窗口

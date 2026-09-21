@@ -1,6 +1,7 @@
 // 应用层命令路由 — 文件传输域
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "app/AppRouter.h"
@@ -18,11 +19,13 @@ static CtrlDown build_dwreq_frame(const NextRequest& req) {
 std::vector<CtrlDown> AppRouter::handle_chunk(std::shared_ptr<Session> sess,
                                               const std::string& data) {
     std::vector<CtrlDown> results;
-    TransferManager* tm = find_transfer_mgr(sess->room_);
-    if (tm == nullptr) {
+    // 未加入房间则房间查不到 房间在栈上持住让传输管理器存活到本函数结束
+    auto room = this->room_mgr_.find_room(sess->room_);
+    if (!room) {
         return results;
     }
-    auto result = tm->handle_chunk_data(sess.get(), data);
+    TransferManager& tm = room->transfer_mgr();
+    auto result = tm.handle_chunk_data(sess.get(), data);
     if (!result.valid_) {
         return results;
     }
@@ -59,9 +62,6 @@ void AppRouter::register_transfer() {
         if (msg.param_count() < 2) {
             return results;
         }
-        // 未加入房间则房间查不到 注册与广播自然空转
-        std::string room_id = sess->room_;
-
         std::string filename = msg.param(0);
         size_t filesize = 0;
         try {
@@ -73,11 +73,13 @@ void AppRouter::register_transfer() {
             return results;
         }
 
-        TransferManager* tm = find_transfer_mgr(room_id);
-        if (tm == nullptr) {
+        // 未加入房间则房间查不到 注册与广播自然空转
+        auto room = this->room_mgr_.find_room(sess->room_);
+        if (!room) {
             return results;
         }
-        std::string file_id = tm->register_file(filename, filesize, sess);
+        TransferManager& tm = room->transfer_mgr();
+        std::string file_id = tm.register_file(filename, filesize, sess);
         if (file_id.empty()) {
             return results;
         }
@@ -87,7 +89,7 @@ void AppRouter::register_transfer() {
         // 广播 FILE 通知给房间其他人 末尾带上上传方 fd 作为唯一标识
         std::string notify = AppParser::build_frame("FILE", {file_id, filename, std::to_string(filesize),
                                                     std::to_string(sess->fd_)});
-        this->broadcast_to_room(room_id, sess.get(), notify, results);
+        broadcast_to_room(room, sess.get(), notify, results);
 
         return results;
     });
@@ -101,23 +103,23 @@ void AppRouter::register_transfer() {
             return results;
         }
         std::string file_id = msg.param(0);
-        std::string room_id = sess->room_;
 
-        TransferManager* tm = find_transfer_mgr(room_id);
-        if (tm == nullptr) {
+        auto room = this->room_mgr_.find_room(sess->room_);
+        if (!room) {
             return results;
         }
+        TransferManager& tm = room->transfer_mgr();
         // 校验归属：文件存在且属于当前上传方
-        auto reg = tm->find_registration(file_id);
+        auto reg = tm.find_registration(file_id);
         if (!reg || reg->uploader_.get() != sess.get()) {
             return results;
         }
 
-        tm->cancel_file(file_id);
+        tm.cancel_file(file_id);
 
         // 广播文件失效，房间内所有下载方卡片显示已失效，与退出房间一致
         std::string dwerr = build_dwerr_frame(file_id, "上传已取消");
-        this->broadcast_to_room(room_id, sess.get(), dwerr, results);
+        broadcast_to_room(room, sess.get(), dwerr, results);
 
         results.push_back({sess, AppParser::build_frame("DONE", "cancelled")});
         return results;
@@ -133,12 +135,12 @@ void AppRouter::register_transfer() {
         }
 
         std::string file_id = msg.param(0);
-        std::string room_id = sess->room_;
-        TransferManager* tm = find_transfer_mgr(room_id);
-        if (tm == nullptr) {
+        auto room = this->room_mgr_.find_room(sess->room_);
+        if (!room) {
             return results;
         }
-        auto reg = tm->find_registration(file_id);
+        TransferManager& tm = room->transfer_mgr();
+        auto reg = tm.find_registration(file_id);
         if (!reg) {
             results.push_back({sess, AppParser::build_frame("SYS", "ERR|文件不存在")});
             return results;
@@ -163,7 +165,7 @@ void AppRouter::register_transfer() {
         }
 
         // 启动传输，取初始窗口请求，失败时不留下任何会话
-        TransferStart start = tm->start_transfer(file_id, sess, start_offset);
+        TransferStart start = tm.start_transfer(file_id, sess, start_offset);
         if (!start.valid_) {
             results.push_back({sess, AppParser::build_frame("SYS", "ERR|无法启动传输 上传方可能已离线")});
             return results;
@@ -208,11 +210,12 @@ void AppRouter::register_transfer() {
             return results;
         }
 
-        TransferManager* tm = find_transfer_mgr(sess->room_);
-        if (tm == nullptr) {
+        auto room = this->room_mgr_.find_room(sess->room_);
+        if (!room) {
             return results;
         }
-        auto ar = tm->handle_ack(sess.get(), session_id, offset);
+        TransferManager& tm = room->transfer_mgr();
+        auto ar = tm.handle_ack(sess.get(), session_id, offset);
         if (!ar.valid_) {
             return results;
         }
@@ -244,11 +247,11 @@ void AppRouter::register_transfer() {
         if (msg.param_count() < 1) {
             return results;
         }
-        TransferManager* tm = find_transfer_mgr(sess->room_);
-        if (tm == nullptr) {
+        auto room = this->room_mgr_.find_room(sess->room_);
+        if (!room) {
             return results;
         }
-        tm->cancel_session(sess, msg.param(0));
+        room->transfer_mgr().cancel_session(sess, msg.param(0));
         return results;
     };
     this->on("DWNPAUSE", cancel_session);

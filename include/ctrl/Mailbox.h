@@ -1,6 +1,11 @@
 // 跨线程单消费者邮箱 — 归一条消费线程的 EventLoop
-// 生产线程 post/post_batch 追加并统一唤醒一次 消费线程 drain 排空到无再放行新唤醒
-// 一次 post 排空整批 避免逐条唤醒 跨线程唤醒的开销只付一次
+// 两个队列互换，生产方只追加不等，消费方拿整批
+//   waiting_ 等待队列 生产方一直往这追加，消费方在处理时到达的全落这里
+//   ready_   就绪队列 攒齐了交给 sink 一整批处理的那条
+// drain 时两个队列互换 ready_ 换上刚攒好的 waiting_ waiting_ 换成刚清空的缓冲
+// 两边容量都留住，稳态下不产生分配
+//
+// draining_ 记着消费方的排空是否在途，在途时生产方只追加不再唤醒
 // 入队序即 FIFO 单生产者对单 fd 的消息顺序经此保持
 #pragma once
 
@@ -15,8 +20,9 @@
 template <typename T>
 class Mailbox {
 public:
-    // sink 只被消费线程执行 按入队序逐条调用
-    using Sink = std::function<void(T)>;
+    // sink 只被消费线程执行 一次拿到整批 逐条 move 走内容
+    // 返回后本类清空 ready_ 并留着重用 所以 sink 不得留存它的引用
+    using Sink = std::function<void(std::vector<T>&)>;
 
     Mailbox(EventLoop& consumer, Sink sink)
         : consumer_(consumer), sink_(std::move(sink)) {}
@@ -26,54 +32,63 @@ public:
 
     // 追加单个 线程安全
     void post(T item) {
-        this->append_and_wake(std::move(item));
-    }
-
-    // 追加一批 线程安全 只保证一次唤醒
-    void post_batch(std::vector<T> items) {
-        for (auto& it : items) {
-            this->append_and_wake(std::move(it));
-        }
-    }
-
-private:
-    // 队列非空且尚无排空在途时置位并唤醒 否则只追加 由在途排空兜底
-    void append_and_wake(T item) {
         bool need_wake = false;
         {
             std::lock_guard<std::mutex> lock(this->mtx_);
-            this->q_.push_back(std::move(item));
-            if (!this->scheduled_) {
-                this->scheduled_ = true;
-                need_wake = true;
-            }
+            this->waiting_.push_back(std::move(item));
+            need_wake = this->mark_draining();
         }
         if (need_wake) {
             this->consumer_.post([this]() { this->drain(); });
         }
     }
 
-    // 只在消费线程执行 排空到队列空再放行唤醒 追加晚于交换的由下一轮收
+    // 追加一批 线程安全 整批只加一次锁只唤醒一次
+    void post_batch(std::vector<T> items) {
+        if (items.empty()) {
+            return;
+        }
+        bool need_wake = false;
+        {
+            std::lock_guard<std::mutex> lock(this->mtx_);
+            this->waiting_.insert(this->waiting_.end(),
+                                  std::make_move_iterator(items.begin()),
+                                  std::make_move_iterator(items.end()));
+            need_wake = this->mark_draining();
+        }
+        if (need_wake) {
+            this->consumer_.post([this]() { this->drain(); });
+        }
+    }
+
+private:
+    // 锁内调用 置位并回答是否需要唤醒
+    bool mark_draining() {
+        bool need_wake = !this->draining_;
+        this->draining_ = true;
+        return need_wake;
+    }
+
+    // 只在消费线程执行 排空到等待队列空再放行唤醒 追加晚于交换的由下一轮收
     void drain() {
         while (true) {
-            std::deque<T> local;
             {
                 std::lock_guard<std::mutex> lock(this->mtx_);
-                if (this->q_.empty()) {
-                    this->scheduled_ = false;
+                if (this->waiting_.empty()) {
+                    this->draining_ = false;
                     return;
                 }
-                this->q_.swap(local);
+                this->ready_.swap(this->waiting_);
             }
-            for (auto& item : local) {
-                this->sink_(std::move(item));
-            }
+            this->sink_(this->ready_);
+            this->ready_.clear();
         }
     }
 
     EventLoop& consumer_;
     Sink sink_;
-    std::deque<T> q_;               // 待消费队列 锁保护
+    std::vector<T> ready_;          // 就绪队列 只消费线程碰
+    std::vector<T> waiting_;        // 等待队列 生产方追加 锁保护
     std::mutex mtx_;
-    bool scheduled_ = false;        // 有排空在途 锁保护
+    bool draining_ = false;         // 有排空在途 锁保护
 };

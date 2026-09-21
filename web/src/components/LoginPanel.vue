@@ -17,8 +17,8 @@ function join() {
     <div class="login-card">
       <h1>ChatServe</h1>
       <p class="subtitle">加入聊天室</p>
-      <input v-model="room" placeholder="请输入房间号" @keyup.enter="join">
-      <input v-model="nick" placeholder="昵称（默认随机）" @keyup.enter="join">
+      <input v-model="room" placeholder="房间号" @keyup.enter="join">
+      <input v-model="nick" placeholder="昵称" @keyup.enter="join">
       <button class="join-btn" @click="join">加入</button>
     </div>
   </div>
