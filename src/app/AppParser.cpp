@@ -9,7 +9,7 @@ AppMessage AppParser::parse(const std::string& data) {
         return msg;  // 裸消息
     }
 
-    // 宽松判断：只要有 '|' 就认为是命令
+    // 有 '|' 认为是命令
     msg.command_ = data.substr(0, pipe);
     msg.rest_ = data.substr(pipe + 1);
 

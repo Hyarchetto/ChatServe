@@ -3,6 +3,11 @@ import { ref, reactive, onUnmounted } from 'vue'
 import { useWebRTC } from './useWebRTC'
 import { useFileTransfer } from './useFileTransfer'
 
+// 应用层心跳 起搏间隔与判死阈值 与服务端 Heartbeat 的三个常数同源
+const kHeartbeatInterval = 30 * 1000
+const kSilenceLimit = 90 * 1000
+const kPingFrame = 'PING|'   // 服务端回 PONG| 客户端不必识别 任何帧都算活着
+
 export function useChat() {
   const joined = ref(false)
   const connStatus = ref('disconnected') // connected / reconnecting / disconnected
@@ -14,6 +19,8 @@ export function useChat() {
 
   let ws = null
   let reconnectTimer = null
+  let heartbeatTimer = null
+  let lastRecvAt = 0
   let isLeaving = false
   let isReconnect = false
   let myRoom = ''
@@ -54,6 +61,10 @@ export function useChat() {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+    }
     myRoom = room
     myNick.value = nick
     myId.value = ''
@@ -66,26 +77,61 @@ export function useChat() {
       isLeaving = false
       connStatus.value = 'connected'
       ws.send('JOIN|' + room + '|' + nick)
+      // 起搏 重连后 onopen 会再进来一次 先清再起 不叠加
+      // 时间戳必须重置 否则长断线后第一拍就拿上一轮留下的过期时间戳把新连接判死
+      if (heartbeatTimer) clearInterval(heartbeatTimer)
+      lastRecvAt = performance.now()
+      heartbeatTimer = setInterval(heartbeatTick, kHeartbeatInterval)
     }
 
     ws.onmessage = (evt) => {
+      // 收到任何一帧都算对端还活着 心跳回包只是其中最规律的一种
+      // 故这里不区分文本与二进制 时钟刷新必须早于下面各分支的提前 return
+      lastRecvAt = performance.now()
       if (typeof evt.data === 'string') handleTextMessage(evt.data)
       else handleBinaryMessage(evt.data)
     }
 
-    ws.onclose = () => {
-      if (isLeaving) return
-      isReconnect = true
-      connStatus.value = 'reconnecting'
-      addSystemMessage('连接断开，正在重连...')
-      memberList.value = []
-      rtc.hangupAll()
-      ft.resetUpload()
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      reconnectTimer = setTimeout(() => {
-        if (myRoom && myNick.value) connect(myRoom, myNick.value)
-      }, 3000)
+    ws.onclose = () => handleDisconnect()
+  }
+
+  // 断线收尾与重连排定 正常 onclose 与假死判死共用这一条路径 只此一处
+  // notice 只换提示文案 收尾动作一次都不重复
+  function handleDisconnect(notice = '连接断开，正在重连...') {
+    if (isLeaving) return
+    isReconnect = true
+    connStatus.value = 'reconnecting'
+    addSystemMessage(notice)
+    memberList.value = []
+    rtc.hangupAll()
+    ft.resetUpload()
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
     }
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = setTimeout(() => {
+      if (myRoom && myNick.value) connect(myRoom, myNick.value)
+    }, 3000)
+  }
+
+  // 心跳一拍 先判死再起搏
+  // 判死在前 免得在一条马上要丢掉的 socket 上再排一帧
+  function heartbeatTick() {
+    // 只在连接态起搏 重连间隙与 CONNECTING 期都由此兜掉 不会二次判死
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    // 页面不可见时定时器可能被浏览器冻结 解冻后这个时间戳必然过期 不拿它判死
+    if (!document.hidden && performance.now() - lastRecvAt >= kSilenceLimit) {
+      // 假死 socket 不会触发 onclose 收尾得自己叫
+      const dead = ws
+      ws = null             // 先摘引用 本拍与后续各拍都以它为界
+      dead.onclose = null   // 摘干净 免得 close 之后又回来走一遍收尾
+      dead.onmessage = null // 同理 免得半路回来往死连接上灌一帧
+      dead.close()
+      handleDisconnect('连接无响应，正在重连...')
+      return
+    }
+    sendCommand(kPingFrame)
   }
 
   function handleTextMessage(data) {
@@ -206,6 +252,10 @@ export function useChat() {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+    }
     if (ws) {
       ws.onclose = null
       ws.close()
@@ -221,6 +271,7 @@ export function useChat() {
 
   onUnmounted(() => {
     if (reconnectTimer) clearTimeout(reconnectTimer)
+    if (heartbeatTimer) clearInterval(heartbeatTimer)
     if (ws) ws.close()
   })
 

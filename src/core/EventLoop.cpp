@@ -10,36 +10,40 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
-// 构造函数什么都不做，真正的初始化工作由 init 函数完成
+// 构造函数只定下待办队列的出口 真正的句柄由 init 创建
 // 在容器初始化完毕后再调用 init
-EventLoop::EventLoop() {}
+EventLoop::EventLoop()
+    : functors_([this](std::vector<std::function<void()>>& fns) {
+          for (auto& fn : fns) {
+              fn();
+          }
+      }) {}
 
-// 析构函数关闭 epoll 和 eventfd
+// 析构函数关闭 epoll 实例
+// 唤醒注册要先撤 那次摘除要碰事件表与 epoll 实例 关掉实例就来不及了
 EventLoop::~EventLoop() {
+    this->wake_.detach();
     if (this->epollfd_ >= 0) {
         close(this->epollfd_);
-    }
-    if (this->eventfd_ >= 0) {
-        close(this->eventfd_);
     }
 }
 
 // 初始化 EventLoop 的两个核心句柄
+// 唤醒 fd 由本类建 建好即交给 FdRegistration 接管 注册不上它会把 fd 一并收掉
 bool EventLoop::init() {
     this->epollfd_ = epoll_create(1);
     if (this->epollfd_ < 0) {
         perror("epoll_create");
         return false;
     }
-    this->eventfd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (this->eventfd_ < 0) {
+    const int wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (wake_fd < 0) {
         perror("eventfd");
         close(this->epollfd_);
         this->epollfd_ = -1;
         return false;
     }
-    this->add_event(this->eventfd_, EPOLLIN, [this]() { this->handle_eventfd();});
-    return true;
+    return this->wake_.attach(*this, wake_fd, [this]() { this->handle_wakeup(); });
 }
 
 // 事件循环主函数
@@ -134,61 +138,22 @@ bool EventLoop::mod_event(int fd, uint32_t events) {
 }
 
 // 入队后写 eventfd 唤醒 epoll_wait 取件 不判线程 本 loop 线程调也只是入队
+// 已有待办在途时入队返回假 那条由正在跑的排空一并取走 不必再写一次 eventfd
 void EventLoop::post(std::function<void()> cb) {
-    bool need_wake = false;
-    {
-        std::lock_guard<std::mutex> lock(this->mtx_functors_);
-        this->pending_functors_.push_back(std::move(cb));
-        // 已有待办在途 排空时会把这条一并取走 不必再写一次 eventfd
-        need_wake = !this->draining_;
-        this->draining_ = true;
-    }
-    if (need_wake) {
+    if (this->functors_.push(std::move(cb))) {
         this->wakeup();
     }
 }
 
 // 写入 eventfd 来唤醒 epoll_wait
+// init 前或 init 失败时唤醒 fd 未接管 早到的唤醒直接跳过避免 EBADF 噪音
 void EventLoop::wakeup() {
-    // init 前或 init 失败时 eventfd_ 为 -1 信号早到路径直接跳过避免 EBADF 噪音
-    if (this->eventfd_ < 0) {
-        return;
-    }
-    uint64_t x = 1;
-    if (write(this->eventfd_, &x, sizeof(x)) < 0) {
-        perror("write eventfd");
-    }
+    this->wake_.wakeup();
 }
 
-// 响应事件回调
-void EventLoop::handle_eventfd() {
-    // 先读取 eventfd 的数据
-    uint64_t x;
-    if (read(this->eventfd_, &x, sizeof(x)) < 0 && errno != EAGAIN) {
-        perror("read eventfd");
-    }
-    // 然后处理线程池回调
-    this->do_pending_functors();
+// 唤醒 fd 可读回调 只由 loop 线程执行 读干计数再排空待办
+void EventLoop::handle_wakeup() {
+    this->wake_.drain();
+    this->functors_.drain();
 }
 
-// 执行所有待办回调
-// 排空到确实为空才放行唤醒 执行期间新投进来的由下一轮取走
-// 两个队列互换 就绪的那条留着重用 免得每轮排空都重新分配
-void EventLoop::do_pending_functors() {
-    while (true) {
-        {
-            // 先加锁把 pending_functors_ 的数据交换到就绪队列，减少锁的持有时间
-            std::lock_guard<std::mutex> lock(this->mtx_functors_);
-            if (this->pending_functors_.empty()) {
-                this->draining_ = false;
-                return;
-            }
-            this->ready_functors_.swap(this->pending_functors_);
-        }
-        // 完成这一批回调函数
-        for (auto& f : this->ready_functors_) {
-            f();
-        }
-        this->ready_functors_.clear();
-    }
-}

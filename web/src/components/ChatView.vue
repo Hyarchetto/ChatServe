@@ -16,14 +16,41 @@ const props = defineProps({
 const emit = defineEmits(['send', 'leave'])
 const msg = ref('')
 const msgListRef = ref(null)
+const msgInputRef = ref(null)
+
+// 输入框长高的上限 与 style.css 里 .input-area textarea 的 max-height 保持一致
+const kMaxInputHeight = 120
+
+// 输入框随内容长高 到上限后转成内部滚动
+// 先把高度压回 auto 再读 scrollHeight 否则量到的是上一轮的高度 只会越量越大
+function growInput() {
+  const e = msgInputRef.value
+  if (!e) return
+  e.style.height = 'auto'
+  e.style.height = Math.min(e.scrollHeight, kMaxInputHeight) + 'px'
+}
 
 function send() {
   const t = msg.value.trim()
   if (!t) return
   emit('send', t)
   msg.value = ''
-  // 发送后回到底部 等渲染完再滚
-  nextTick(() => msgListRef.value?.scrollToLatest())
+  // 发送后收回一行并回到底部 都等渲染完再做
+  nextTick(() => {
+    growInput()
+    msgListRef.value?.scrollToLatest()
+  })
+}
+
+// 回车发送 Shift+回车换行 其余修饰键组合一律放行
+// 输入法组合期间必须直接返回 中文选词的确认键同样是回车
+// 不判这一下 打一个词按回车确认候选 半截拼音就被当消息发了出去
+// keyCode 229 是输入法自己的信号 Safari 的 keydown 不设 isComposing 只认这个 两个都要
+function onKeydown(e) {
+  if (e.isComposing || e.keyCode === 229) return
+  if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return
+  e.preventDefault()
+  send()
 }
 
 function onFile(e) {
@@ -98,7 +125,18 @@ const connText = { connected: '已连接', reconnecting: '重连中', disconnect
             </svg>
             <input type="file" hidden @change="onFile">
           </label>
-          <input v-model="msg" placeholder="输入消息..." @keyup.enter="send">
+          <textarea
+            ref="msgInputRef"
+            v-model="msg"
+            id="msg"
+            name="msg"
+            rows="1"
+            autocomplete="off"
+            placeholder="输入消息..."
+            title="回车发送，Shift+回车换行"
+            @input="growInput"
+            @keydown="onKeydown"
+          ></textarea>
           <button class="send-btn" @click="send">发送</button>
         </div>
       </div>

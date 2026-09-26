@@ -1,9 +1,9 @@
-// 应用层命令路由 — 聊天/信令/文件传输三条命令域共用一张命令表
+// 应用层命令路由 — 聊天/信令/文件传输/心跳四条命令域共用一张命令表
 // 跑在业务线程池 只认 Session 控制块与持有的 RoomManager
 // 输出按 Session 寻址的应用文本 组帧由 io 侧完成
 // 同一 Session 的命令与收尾由中控单飞门串行 类内不需要串行锁
 // 房间由调用方在栈上持 shared_ptr 存活 传输管理器随房间走
-// 表机制与共享助手在本类 三条命令域各自占一个 cpp
+// 表机制与共享助手在本类 每个命令域各自占一个 cpp
 #pragma once
 
 #include <functional>
@@ -39,10 +39,11 @@ private:
     // 注册命令处理器
     void on(const std::string& command, Handler handler);
 
-    // 三条命令域各自注册处理器
+    // 每个命令域各自注册处理器
     void register_chat();
     void register_signalling();
     void register_transfer();
+    void register_heartbeat();
 
     // 广播帧给成员快照里除 except 外的所有 Session
     static void broadcast_except(const std::vector<Room::Member>& live, Session* except,

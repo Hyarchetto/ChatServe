@@ -12,6 +12,7 @@ AppRouter::AppRouter(RoomManager& room_mgr) : room_mgr_(room_mgr) {
     this->register_chat();              // 聊天协议
     this->register_signalling();        // WebRTC协议
     this->register_transfer();          // 文件传输协议
+    this->register_heartbeat();         // 应用层心跳协议
 }
 
 // 分发命令，返回待发帧

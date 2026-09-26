@@ -24,7 +24,7 @@
 
 #include "../ctrl/Session.h"
 #include "../ctrl/CtrlMsg.h"
-#include "../ctrl/Mailbox.h"
+#include "../core/Mailbox.h"
 #include "../chatroom/Room.h"
 #include "../app/AppRouter.h"
 #include "../core/EventLoop.h"
@@ -57,15 +57,11 @@ public:
 
 private:
     // 一条待处理的操作 携带会话保活
+    // kind_ 直接复用上行事件类型 投池路上不再重新编码
+    // CLOSED 在此表示连接关闭后的业务收尾 它只可能由那条 CLOSED 事件产生
     struct Cmd {
-        enum class Kind : uint8_t {
-            WS_TEXT,    // 一条 WS 文本应用消息 已剥帧
-            WS_BINARY,  // 一条 WS 二进制分块 含 20B 传输头
-            CLEANUP,    // 连接关闭后的业务收尾
-        };
-
         std::shared_ptr<Session> sess_;             // 会话 持引用让队列中的待办不被释放
-        Kind kind_ = Kind::WS_TEXT;
+        CtrlUpKind kind_ = CtrlUpKind::WS_TEXT;
         std::string data_;                          // 应用原文或分块原始字节 收尾时为空
     };
 
@@ -85,9 +81,9 @@ private:
         bool closing_ = false;            // 欠一条收尾 排定后清掉
     };
 
-    // 上行邮箱 sink 只在中控线程执行 一轮拿到整批
+    // 上行邮箱回调只在中控线程执行 一轮拿到整批
     void handle_uplink(std::vector<CtrlUp>& ups);
-    // 回程邮箱 sink 只在中控线程执行 一轮拿到整批响应
+    // 回程邮箱回调只在中控线程执行 一轮拿到整批响应
     // 整批的帧合起来分拣一次 整批的推进结果一次投池
     void handle_result(std::vector<CtrlResult>& results);
     // 连接关闭 只中控线程执行 登记待收尾并把要收尾的命令攒进 cmds
@@ -102,11 +98,9 @@ private:
     // 业务池线程入口 按 kind 委托 AppRouter 算响应
     void run_business(Cmd cmd);
     // 路由一条文本命令
-    std::vector<CtrlDown> route(std::shared_ptr<Session> sess,
-                                const std::string& text);
+    std::vector<CtrlDown> route(std::shared_ptr<Session> sess, const std::string& text);
     // 处理一个二进制分块
-    std::vector<CtrlDown> route_chunk(std::shared_ptr<Session> sess,
-                                      const std::string& data);
+    std::vector<CtrlDown> route_chunk(std::shared_ptr<Session> sess, const std::string& data);
 
     // 唯一分发点 只中控线程调用 按帧目标会话自带的归属 io 放进对应邮箱
     void dispatch(std::vector<CtrlDown> frames);

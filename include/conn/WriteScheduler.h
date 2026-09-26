@@ -35,18 +35,24 @@ public:
 
     // 把一帧响应入本 loop 待发队列并立即排空 只能在本 loop 线程调用
     void enqueue(const std::shared_ptr<Connection>& conn, std::string data);
+    // 心跳探测帧走这条 与自己发出去的字节一样要发 但不计入出站推进
+    // 否则空闲连接每轮探测都在刷新自己的存活证据 永远判不死
+    void enqueue_probe(const std::shared_ptr<Connection>& conn, std::string data);
     // 写事件回调
     void handle_write(const std::shared_ptr<Connection>& conn);
     // 数据未完全发送 — 待写数据发完再回调 del_connection 缓冲已空则立即收
     void request_close(const std::shared_ptr<Connection>& conn);
     // 移除指定连接的未完成写入 连接销毁时调用
     void remove_pending(const std::shared_ptr<Connection>& conn);
+    // 该连接是否已表达关闭意图 缓冲发完即回收 心跳据此不再往它上面入队新帧
+    bool is_closing(const std::shared_ptr<Connection>& conn) const;
 
 private:
     // 本地待响应的结构体 发送目标与发送内容
     struct PendingResponse {
         std::shared_ptr<Connection> conn_;
         std::string data_;
+        bool probe_ = false;        // 心跳探测帧 写出不算一次出站活动
     };
     // 排空待发队列 处理期间新入队的由下一轮收
     void drain();

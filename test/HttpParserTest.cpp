@@ -27,8 +27,8 @@ TEST(http_parser_leaves_incomplete_request_pending) {
 TEST(http_parser_parses_headers_case_insensitively) {
     HttpResult r = HttpParser::handle("GET / HTTP/1.1\r\ncontent-length: 0\r\nX-A: b\r\n\r\n");
     CHECK(r.type_ == HttpResultType::OK);
-    auto v = r.request_.find_header("Content-Length");
-    CHECK(v.has_value());
+    auto v = r.request_.headers_.find("Content-Length");
+    CHECK(v != nullptr);
     CHECK_EQ(*v, std::string("0"));
 }
 
@@ -44,11 +44,27 @@ TEST(http_parser_trims_whitespace_before_header_colon) {
 
 TEST(http_parser_merges_duplicate_headers_differing_only_in_case) {
     // 大小写不同的同名字段归到同一个键 后写的值覆盖先写的
-    HttpResult r = HttpParser::handle(
-        "POST /up HTTP/1.1\r\nContent-Length: 5\r\nCONTENT-LENGTH: 3\r\n\r\nabc");
+    HttpResult r = HttpParser::handle("GET / HTTP/1.1\r\nX-A: 1\r\nX-A: 2\r\n\r\n");
     CHECK(r.type_ == HttpResultType::OK);
     CHECK_EQ(r.request_.headers_.size(), size_t(1));
-    CHECK_EQ(r.request_.body_, std::string("abc"));
+    auto v = r.request_.headers_.find("x-a");
+    CHECK(v != nullptr);
+    CHECK_EQ(*v, std::string("2"));
+}
+
+TEST(http_parser_rejects_duplicate_content_length) {
+    // 两条长度不一致时中间层与服务器可能各取一个 直接判错
+    HttpResult r = HttpParser::handle(
+        "POST /up HTTP/1.1\r\nContent-Length: 5\r\nCONTENT-LENGTH: 3\r\n\r\nabc");
+    CHECK(r.type_ == HttpResultType::BAD_REQUEST);
+    CHECK_EQ(r.error_msg_, std::string("Duplicate Content-Length"));
+}
+
+TEST(http_parser_rejects_transfer_encoding_with_content_length) {
+    HttpResult r = HttpParser::handle(
+        "POST /up HTTP/1.1\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\nabc");
+    CHECK(r.type_ == HttpResultType::BAD_REQUEST);
+    CHECK_EQ(r.error_msg_, std::string("Ambiguous message length"));
 }
 
 TEST(http_parser_rejects_empty_header_name) {
@@ -58,8 +74,8 @@ TEST(http_parser_rejects_empty_header_name) {
 
 TEST(http_parser_trims_leading_whitespace_in_header_value) {
     HttpResult r = HttpParser::handle("GET / HTTP/1.1\r\nHost:   example\r\n\r\n");
-    auto v = r.request_.find_header("Host");
-    CHECK(v.has_value());
+    auto v = r.request_.headers_.find("Host");
+    CHECK(v != nullptr);
     CHECK_EQ(*v, std::string("example"));
 }
 

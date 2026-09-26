@@ -8,12 +8,26 @@
 #include <cerrno>
 #include <cstdio>
 
+// 真写出字节才算一次活跃 心跳据此判这条连接是否还在推进
+// 两条发送路径共用 只在确实发出去时刷新 探测帧除外
+static void stamp_activity(const std::shared_ptr<Connection>& conn, ssize_t sent, bool probe) {
+    if (sent > 0 && !probe) {
+        conn->last_activity_ = std::chrono::steady_clock::now();
+    }
+}
+
 WriteScheduler::WriteScheduler(EventLoop& loop, DelConnectionFn del_conn)
     : loop_(loop), del_connection_(std::move(del_conn)) {}
 
 // 入队后立即排空 只由本 loop 归属线程调用
 void WriteScheduler::enqueue(const std::shared_ptr<Connection>& conn, std::string data) {
-    this->queue_.emplace(PendingResponse{conn, std::move(data)});
+    this->queue_.emplace(PendingResponse{conn, std::move(data), false});
+    this->drain();
+}
+
+// 心跳探测帧 与业务帧同路发出 区别只在写出去了不算出站推进
+void WriteScheduler::enqueue_probe(const std::shared_ptr<Connection>& conn, std::string data) {
+    this->queue_.emplace(PendingResponse{conn, std::move(data), true});
     this->drain();
 }
 
@@ -36,6 +50,8 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
         this->del_connection_(conn);
         return;
     }
+    // 这里已看不出攒下来的是哪一路帧 只可能是有积压时的补发 此时出站本就新鲜
+    stamp_activity(conn, sent, false);
     // 完成发送
     if (sent >= static_cast<ssize_t>(buf.size())) {
         this->pending_writes_.erase(conn);
@@ -65,6 +81,10 @@ void WriteScheduler::request_close(const std::shared_ptr<Connection>& conn) {
 void WriteScheduler::remove_pending(const std::shared_ptr<Connection>& conn) {
     this->pending_writes_.erase(conn);
     this->closing_.erase(conn);
+}
+
+bool WriteScheduler::is_closing(const std::shared_ptr<Connection>& conn) const {
+    return this->closing_.find(conn) != this->closing_.end();
 }
 
 // 排空待发队列 处理期间新入队的由下一轮收
@@ -102,6 +122,7 @@ void WriteScheduler::drain() {
             this->del_connection_(item.conn_);
             continue;
         }
+        stamp_activity(item.conn_, sent, item.probe_);
         // 没发完 未发段进待写缓冲 注册写事件
         if (sent < static_cast<ssize_t>(wire.size())) {
             this->pending_writes_[item.conn_].append(wire.data() + sent, wire.size() - sent);

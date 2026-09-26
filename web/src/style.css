@@ -225,7 +225,7 @@ body {
 
 .msg-body {
   padding: 8px 12px; border-radius: 12px; line-height: 1.5; font-size: 14px;
-  color: var(--text);
+  color: var(--text); white-space: pre-wrap;   /* 多行输入带进来的换行原样折行 */
 }
 .msg.self .msg-body { background: var(--self-msg); border-bottom-right-radius: 4px; }
 .msg.other .msg-body { background: var(--other-msg); border-bottom-left-radius: 4px; }
@@ -233,15 +233,20 @@ body {
 .input-area {
   display: flex; padding: 10px 14px; border-top: 1px solid var(--border);
   gap: 8px; flex-shrink: 0;
+  align-items: flex-end;   /* 输入框长高时按钮贴底 不跟着拉伸 */
 }
 
-.input-area input {
+/* 输入框单行起随内容长高 上限与 ChatView 的 kMaxInputHeight 保持一致
+   font-family 必须显式继承 textarea 不像 input 那样默认跟随页面字体 */
+.input-area textarea {
   flex: 1; min-width: 0; padding: 10px 12px;
   border: 1px solid var(--border); border-radius: 10px;
-  font-size: 14px; color: var(--text); outline: none;
+  font-size: 14px; font-family: inherit; line-height: 1.5;
+  color: var(--text); outline: none; resize: none;
+  overflow-y: auto; max-height: 120px;
   transition: border-color 0.2s;
 }
-.input-area input:focus { border-color: var(--primary); }
+.input-area textarea:focus { border-color: var(--primary); }
 
 .input-area .send-btn {
   padding: 10px 20px; background: var(--primary); border: none; border-radius: 10px;
@@ -333,5 +338,5 @@ body {
   .avatar { width: 44px; height: 44px; font-size: 20px; }
 
   .chat-panel { flex: 1; border-left: none; border-top: 1px solid var(--border); }
-  .input-area input { font-size: 16px; }
+  .input-area textarea { font-size: 16px; }   /* 16px 以下 iOS 聚焦时会自动放大页面 */
 }

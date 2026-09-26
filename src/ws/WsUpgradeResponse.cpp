@@ -7,7 +7,7 @@
 // ==================== 握手升级响应 ====================
 
 HttpResponse WsUpgradeResponse::build(const HttpRequest& req) {
-    auto key = req.find_header("Sec-WebSocket-Key");
+    auto key = req.headers_.find("Sec-WebSocket-Key");
     if (!key) {
         return ErrorResponse::build_bad_request("Missing Sec-WebSocket-Key");
     }
@@ -35,8 +35,8 @@ HttpResponse WsUpgradeResponse::build(const HttpRequest& req) {
     HttpResponse resp;
     resp.status_ = 101;
     resp.status_text_ = "Switching Protocols";
-    resp.headers_["upgrade"] = "websocket";
-    resp.headers_["connection"] = "Upgrade";
-    resp.headers_["sec-websocket-accept"] = base64.substr(0, 28);
+    resp.headers_.set("upgrade", "websocket");
+    resp.headers_.set("connection", "Upgrade");
+    resp.headers_.set("sec-websocket-accept", base64.substr(0, 28));
     return resp;
 }

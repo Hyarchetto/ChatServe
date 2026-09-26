@@ -11,7 +11,7 @@
 #include "Acceptor.h"
 #include "../conn/ConnHandler.h"
 #include "../ctrl/CtrlMsg.h"
-#include "../ctrl/Mailbox.h"
+#include "../core/Mailbox.h"
 #include "../core/EventLoop.h"
 
 class Reactor {

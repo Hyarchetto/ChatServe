@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <chrono>
 #include <cerrno>
 #include <system_error>
 
@@ -23,6 +24,8 @@ public:
     LazyBuffer read_buf_;               // 累积读取缓冲区
     bool ws_mode_ = false;              // 是否已升级为 WebSocket
     WsFragmentState ws_frag_;           // 未成形分片消息的累积 读缓冲的溢出段
+    // 心跳判据 最近一次任一方向有动静的时刻 收到字节或真写出字节时刷 建连即起算
+    std::chrono::steady_clock::time_point last_activity_ = std::chrono::steady_clock::now();
 
     // 按 fd 与归属 io 在内部建 Session 控制块 连接在则 Session 有主 析构即连接终结
     // 设不上非阻塞就不进入连接生命周期，构造抛出由建连处收尾关 fd

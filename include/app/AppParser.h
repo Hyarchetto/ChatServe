@@ -1,6 +1,6 @@
 // WebSocket 应用层协议解析器 — 解析/构建自定义文本协议
 // 协议格式：COMMAND|param1|param2|...
-// 协议：JOIN|房间|昵称  →  OK|房间|fd / MSG|fd|内容 / SYS|消息 / MEMBERS|列表
+// 协议：JOIN|房间|昵称  →  OK|房间|fd / MSG|fd|内容 / SYS|消息 / MEMBERS|列表 / PING| → PONG|
 // 聊天统一走 MSG 命令，内容取 MSG| 之后的剩余部分，内容可含 |
 // 有 | 分隔的第一段为命令字，其余为参数；无 | 的裸文本与未注册命令一律丢弃
 #pragma once

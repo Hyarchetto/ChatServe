@@ -35,8 +35,17 @@ void Reactor::set_fd_handler(std::function<void(int)> handler) {
     this->fd_handler_ = std::move(handler);
 }
 
+// 创建 epoll 与 eventfd 从属形态顺带把连接处理器的 fd 挂上
+// 挂载要往事件表里加 fd 必须在 init 之后 loop 之前 本函数正在这个位置
 bool Reactor::init() {
-    return this->loop_.init();
+    if (!this->loop_.init()) {
+        return false;
+    }
+    // 主形态只有监听没有连接表 无 fd 可挂
+    if (!this->conn_handler_) {
+        return true;
+    }
+    return this->conn_handler_->attach();
 }
 
 // 内部 Acceptor 只提供监听逻辑 事件循环不暴露 由本类把监听 fd 挂入内部 epoll

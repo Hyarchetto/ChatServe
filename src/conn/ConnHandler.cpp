@@ -5,11 +5,14 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <iostream>
 #include <utility>
 
+#include "conn/Heartbeat.h"
 #include "http/HttpResponse.h"
 #include "ws/WsFrame.h"
 #include "ws/WsOpcode.h"
@@ -22,14 +25,20 @@ ConnHandler::ConnHandler(EventLoop& loop, int io_index,
     , writer_(loop, [this](const std::shared_ptr<Connection>& c) {
           this->close_connection(c);
       })
-    , downlink_box_(loop, [this](std::vector<CtrlDown>& ds) {
+    , heartbeat_(Heartbeat::kTickInterval, [this]() { this->on_tick(); })
+    , downlink_box_([this](std::vector<CtrlDown>& ds) {
           this->downlink_batch(ds);
       })
     , ctrl_uplink_box_(ctrl_uplink_box) {}
 
+// 装配到事件循环
+bool ConnHandler::attach() {
+    // 装配本地邮箱和心跳事件
+    return this->downlink_box_.attach(this->loop_) && this->heartbeat_.attach(this->loop_);
+}
+
 // ======================================== 连接管理 ========================================
 void ConnHandler::add_connection(int fd) {
-    // Connection 内部按 fd 与归属 io 建 Session 控制块 身份即对象 跨线程引用计数保活
     // 构造失败 fd 尚未交给 Connection，由这里关闭
     std::shared_ptr<Connection> conn;
     try {
@@ -40,8 +49,7 @@ void ConnHandler::add_connection(int fd) {
         close(fd);
         return;
     }
-    // 挂不上监听就不会有任何事件到达，连接无意义直接收
-    // 此时尚未登记进 conns_，Connection 析构关 fd
+    // 注册失败直接返回
     if (!this->loop_.add_event(fd, EPOLLIN | EPOLLET,
             [this, conn]() { this->handle_client_fd(conn); },
             [this, conn]() { this->writer_.handle_write(conn); },
@@ -53,6 +61,7 @@ void ConnHandler::add_connection(int fd) {
 }
 
 void ConnHandler::close_connection(const std::shared_ptr<Connection>& conn) {
+    // 连接已关闭直接退出
     if (!conn->sess_->alive_) {
         return;
     }
@@ -60,12 +69,55 @@ void ConnHandler::close_connection(const std::shared_ptr<Connection>& conn) {
     this->conns_.erase(conn->sess_.get());
     this->writer_.remove_pending(conn);
     this->loop_.del_event(conn->sess_->fd_);
-    // 报关闭的判据就是升级成功 与中控据此建业务态是同一个事实 不可能打架
+    // 如果已经升级为ws模式，额外通知业务层
     if (conn->ws_mode_) {
         CtrlUp up;
         up.kind_ = CtrlUpKind::CLOSED;
         up.sess_ = conn->sess_;
         this->uplink(up);
+    }
+}
+
+// ======================================== 心跳 ========================================
+// 心跳节拍 取当前时刻扫一遍
+void ConnHandler::on_tick() {
+    this->on_tick(std::chrono::steady_clock::now());
+}
+
+// 扫描全部连接 全静默过一个节拍的发 PING 过三个节拍的判死
+// 先整表快照再动作 入队与关闭都会改 conns_ 边遍历边动迭代器就失效了
+void ConnHandler::on_tick(std::chrono::steady_clock::time_point now) {
+    std::vector<std::shared_ptr<Connection>> snapshot;
+    snapshot.reserve(this->conns_.size());
+    for (auto& entry : this->conns_) {
+        snapshot.push_back(entry.second);
+    }
+
+    std::chrono::milliseconds oldest{0};
+    size_t closed = 0;
+    for (auto& conn : snapshot) {
+        const auto idle = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - conn->last_activity_);
+        switch (Heartbeat::judge(idle, conn->ws_mode_)) {
+            case Heartbeat::Action::PING:
+                // 已表达关闭意图的连接不再入队
+                if (!this->writer_.is_closing(conn)) {
+                    this->writer_.enqueue_probe(conn, WsFrame::build(WsOpcode::PING, ""));
+                }
+                break;
+            case Heartbeat::Action::CLOSE:
+                oldest = std::max(oldest, idle);
+                this->close_connection(conn);
+                ++closed;
+                break;
+            case Heartbeat::Action::NONE:
+                break;
+        }
+    }
+    // 汇总一行 一个节拍里可能收掉上千条 逐条打会和其他线程的输出交错
+    if (closed > 0) {
+        std::cerr << "心跳超时关闭 " << closed << " 条 最早空闲 " << oldest.count()
+                  << "ms" << std::endl;
     }
 }
 
@@ -77,6 +129,8 @@ bool ConnHandler::pump_read(const std::shared_ptr<Connection>& conn) {
     while (true) {
         ssize_t n = recv(client_fd, temp_buffer, sizeof(temp_buffer), 0);
         if (n > 0) {
+            // 收到任何字节都算一次活跃 不区分是业务帧还是对 PING 的回包
+            conn->last_activity_ = std::chrono::steady_clock::now();
             conn->read_buf_.append(temp_buffer, static_cast<size_t>(n));
             continue;
         }
@@ -140,30 +194,30 @@ void ConnHandler::handle_ws(const std::shared_ptr<Connection>& conn, WsAction ac
     for (auto& wire : action.responses_) {
         this->writer_.enqueue(conn, std::move(wire));
     }
-    // 上行中控 文本消息与二进制分块各按类型上报
-    this->uplink_messages(conn, std::move(action.messages_), false);
-    this->uplink_messages(conn, std::move(action.binaries_), true);
+    // 上行中控 一条决策里的文本与二进制合成一批
+    this->uplink_ws(conn, action);
     // CLOSE 回包已入队 冲刷完由写引擎回调回收
     if (action.close_) {
         this->writer_.request_close(conn);
     }
 }
 
-// ======================================== 上行 ========================================
+// ======================================== 上行单条 ========================================
 void ConnHandler::uplink(CtrlUp up) {
     this->ctrl_uplink_box_.post(std::move(up));
 }
 
-// 上行一批应用消息 文本或二进制分块 按入队序逐条上报
-void ConnHandler::uplink_messages(const std::shared_ptr<Connection>& conn,
-                                  std::vector<std::string> items, bool binary) {
-    for (auto& item : items) {
-        CtrlUp up;
-        up.kind_ = binary ? CtrlUpKind::WS_BINARY : CtrlUpKind::WS_TEXT;
-        up.sess_ = conn->sess_;
-        up.text_ = std::move(item);
-        this->uplink(std::move(up));
+// 上行一条 WS 决策里的全部应用消息
+void ConnHandler::uplink_ws(const std::shared_ptr<Connection>& conn, WsAction& action) {
+    std::vector<CtrlUp> ups;
+    ups.reserve(action.messages_.size() + action.binaries_.size());
+    for (auto& item : action.messages_) {
+        ups.push_back(CtrlUp{CtrlUpKind::WS_TEXT, conn->sess_, std::move(item)});
     }
+    for (auto& item : action.binaries_) {
+        ups.push_back(CtrlUp{CtrlUpKind::WS_BINARY, conn->sess_, std::move(item)});
+    }
+    this->ctrl_uplink_box_.post_batch(std::move(ups));
 }
 
 // ======================================== 下行 ========================================
@@ -174,8 +228,10 @@ void ConnHandler::downlink_batch(std::vector<CtrlDown>& downs) {
         if (it == this->conns_.end()) {
             continue;  // 目标已关闭 弃帧
         }
-        const WsOpcode opcode = down.binary_ ? WsOpcode::BINARY : WsOpcode::TEXT;
-        this->writer_.enqueue(it->second,
-                              WsFrame::build(opcode, std::move(down.text_)));
+        // 载荷类型到帧类型的映射 方向由 ctrl 层指向 ws 层
+        const WsOpcode opcode = (down.kind_ == CtrlDownKind::WS_BINARY)
+                                    ? WsOpcode::BINARY
+                                    : WsOpcode::TEXT;
+        this->writer_.enqueue(it->second, WsFrame::build(opcode, std::move(down.text_)));
     }
 }

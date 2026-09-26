@@ -10,7 +10,7 @@ struct HttpResponse {
     int status_ = 200;
     std::string status_text_ = "OK";
     std::string version_ = "HTTP/1.1";
-    HeaderMap headers_;                              // 键均已归一化为小写
+    HeaderMap headers_;                              // 头名大小写不敏感 键以归一化形态存储
     std::string body_;
 
     // 标准序列化：状态行 + 头部 + 空行 + body
@@ -20,7 +20,7 @@ struct HttpResponse {
         oss << version_ << ' ' << status_ << ' ' << status_text_ << "\r\n";
 
         // 调用方未显式设置 Content-Length 时才自动计算
-        bool has_cl = this->has_header("Content-Length");
+        bool has_cl = this->headers_.find("Content-Length") != nullptr;
         for (auto& [k, v] : headers_) {
             oss << k << ": " << v << "\r\n";
         }
@@ -32,10 +32,5 @@ struct HttpResponse {
         // body
         oss << body_;
         return oss.str();
-    }
-
-    // 头部名大小写不敏感查找，大小写不同的同名字段算同一个
-    bool has_header(const std::string& key) const {
-        return headers_.find(lowercase(key)) != headers_.end();
     }
 };

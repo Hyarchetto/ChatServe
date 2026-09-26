@@ -2,6 +2,8 @@
 #include "core/ThreadPool.h"
 
 #include <iostream>
+#include <stdexcept>
+#include <utility>
 
 ThreadPool::ThreadPool(size_t thread_num) {
     if (thread_num == 0) {
@@ -28,7 +30,7 @@ void ThreadPool::shutdown() {
     }
 }
 
-// 整批一次入队 一次唤醒 逐个 notify_one 要写 N 次 eventfd 与 N 次队列锁
+// 整批一次入队 一次唤醒 
 void ThreadPool::post_batch(std::vector<std::function<void()>> tasks) {
     if (tasks.empty()) {
         return;

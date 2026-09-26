@@ -21,7 +21,7 @@ static HttpResponse build_error_page(int code, const std::string& text, const st
     resp.status_text_ = text;
     resp.body_ = "<html><body><h1>" + std::to_string(code) + " " + escape_html(text)
                + "</h1><p>" + escape_html(msg) + "</p></body></html>";
-    resp.headers_["content-type"] = "text/html; charset=utf-8";
+    resp.headers_.set("content-type", "text/html; charset=utf-8");
     return resp;
 }
 

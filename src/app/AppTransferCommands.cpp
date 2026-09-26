@@ -41,7 +41,7 @@ std::vector<CtrlDown> AppRouter::handle_chunk(std::shared_ptr<Session> sess,
         CtrlDown bin;
         bin.sess_ = std::move(dl);
         bin.text_ = data;
-        bin.binary_ = true;
+        bin.kind_ = CtrlDownKind::WS_BINARY;
         results.push_back(std::move(bin));
     }
     // 滑动窗口有空位时发送下一个 DWREQ 给上传方

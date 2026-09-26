@@ -2,9 +2,14 @@
 add_executable(chat_tests
     TestMain.cpp
     AppParserTest.cpp
+    AppRouterTest.cpp
+    BatchQueueTest.cpp
+    ConnHandlerTest.cpp
+    HeartbeatTest.cpp
     HttpHandlerTest.cpp
     HttpParserTest.cpp
     LazyBufferTest.cpp
+    TimerTest.cpp
     TransferManagerTest.cpp
     WsParserTest.cpp
 )

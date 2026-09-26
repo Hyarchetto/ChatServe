@@ -2,12 +2,15 @@
 # 源文件按分层排列：core → chatroom → app → http → ws → conn → server
 add_library(chat_common STATIC
     core/EventLoop.cpp
+    core/FdRegistration.cpp
     core/ThreadPool.cpp
+    core/Timer.cpp
 
     chatroom/Room.cpp
     chatroom/TransferManager.cpp
 
     app/AppChatCommands.cpp
+    app/AppHeartbeatCommands.cpp
     app/AppParser.cpp
     app/AppRouter.cpp
     app/AppSignalCommands.cpp

@@ -8,9 +8,10 @@
 #include <atomic>
 #include <functional>
 #include <unordered_map>
-#include <vector>
-#include <mutex>
 #include <cstdint>
+
+#include "BatchQueue.h"
+#include "FdRegistration.h"
 
 class EventLoop {
 public:
@@ -54,7 +55,7 @@ public:
 
     // 把回调投递到本循环所属线程执行 跨线程安全
     // 只入队并唤醒 不保证立即执行 本 loop 线程自己调也一样入队
-    // 本线程已有待办在途时只入队不再唤醒 重复唤醒由 draining_ 合并掉
+    // 已有待办在途时只入队不再写 eventfd 重复唤醒由队列自己合并掉
     void post(std::function<void()> cb);
 
     // 写入 eventfd 来唤醒 epoll_wait 使之立刻返回
@@ -62,7 +63,7 @@ public:
 
 private:
     int epollfd_ = -1;           // epoll 实例的文件描述符
-    int eventfd_ = -1;           // eventfd 用于跨线程唤醒
+    FdRegistration wake_;        // 唤醒 fd 的注册 建 fd 归 init 本类只管接管与读写
 
     // 每个 fd 关联的三个回调：读、写、错误
     struct EventCallbacks {
@@ -74,26 +75,13 @@ private:
     // fd 到其三个回调的映射关系表
     std::unordered_map<int, EventCallbacks> event_map_;
 
-    // 保护 pending_functors_ 的互斥锁
-    std::mutex mtx_functors_;
-
-    // 等待队列，线程池投回来的待办回调都追加到这里，锁保护
-    std::vector<std::function<void()>> pending_functors_;
-
-    // 就绪队列，攒齐了正要执行的那批，与 pending_functors_ 互换复用容量
-    // 只本 loop 线程碰，留着不销毁是免得每轮排空都重新分配
-    std::vector<std::function<void()>> ready_functors_;
-
-    // 有排空在途，与 pending_functors_ 同锁保护，投递方据此省掉重复的 eventfd 写
-    bool draining_ = false;
+    // 跨线程投递进来的待办 收成一体 攒批执行
+    BatchQueue<std::function<void()>> functors_;
 
     std::atomic<bool> quit_ = false;   // 退出标志，loop 函数每轮都会检查
 
-    // 读取 eventfd 中的数据，清空唤醒标记
-    void handle_eventfd();
-
-    // 把 pending_functors_ 中的回调全部取出并执行
-    void do_pending_functors();
+    // 读干唤醒计数 接着排空待办
+    void handle_wakeup();
 
     static constexpr int kMaxEvents = 1024;
 };

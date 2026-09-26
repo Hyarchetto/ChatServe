@@ -113,21 +113,41 @@ HttpResult HttpParser::handle(std::string_view buf) {
             result.error_msg_ = "Invalid header";
             return result;
         }
-        // 头名归一化成小写，头表与查找侧走同一个口径
-        key = lowercase(std::string_view(key).substr(0, key_end + 1));
+        // 大小写归一化由头表负责 这里只管裁掉两侧空白
+        key.resize(key_end + 1);
 
         std::string val = line.substr(colon + 1);
         size_t first = val.find_first_not_of(" \t");
-        val = (first == std::string::npos) ? std::string{} : val.substr(first);
+        if (first == std::string::npos) {
+            val.clear();
+        }
+        else {
+            val.erase(0, first);
+        }
 
-        result.request_.headers_[key] = val;
+        // 重复的 Content-Length 中间层与服务器可能各取一个 直接判错
+        // 其余头名重复是 RFC 7230 允许的 后写的覆盖先写的
+        if (!result.request_.headers_.set(key, val) && lowercase(key) == "content-length") {
+            result.type_ = HttpResultType::BAD_REQUEST;
+            result.error_msg_ = "Duplicate Content-Length";
+            return result;
+        }
+    }
+
+    // 服务器不实现 chunked 解码 Transfer-Encoding 与 Content-Length 同时出现时
+    // 中间层与服务器可能各取一个长度 直接判错
+    if (result.request_.headers_.find("Transfer-Encoding") &&
+        result.request_.headers_.find("Content-Length")) {
+        result.type_ = HttpResultType::BAD_REQUEST;
+        result.error_msg_ = "Ambiguous message length";
+        return result;
     }
 
     // ==================== 请求体 ====================
     {
         size_t content_length = 0;
-        // 走大小写容错查找，精确匹配会漏掉 content-length 变体，body 不消耗导致请求错位
-        auto cl = result.request_.find_header("Content-Length");
+        // 头表查找大小写不敏感 精确匹配会漏掉 content-length 变体 body 不消耗导致请求错位
+        auto cl = result.request_.headers_.find("Content-Length");
         if (cl) {
             try {
                 content_length = std::stoul(*cl);
@@ -155,8 +175,8 @@ HttpResult HttpParser::handle(std::string_view buf) {
 
     // ==================== 完成 ====================
     {
-        auto upgrade = result.request_.find_header("Upgrade");
-        auto connection_hdr = result.request_.find_header("Connection");
+        auto upgrade = result.request_.headers_.find("Upgrade");
+        auto connection_hdr = result.request_.headers_.find("Connection");
         if (upgrade && lowercase(*upgrade) == "websocket" &&
             connection_hdr && has_conn_token(*connection_hdr, "upgrade")) {
             result.type_ = HttpResultType::WS_UPGRADE;

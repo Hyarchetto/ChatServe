@@ -9,10 +9,10 @@
 #include "app/AppMessage.h"
 
 CtrlDispatcher::CtrlDispatcher(ThreadPool& works) : works_(works), app_router_(room_mgr_) {
-    // 两个邮箱的 sink 都只经中控 loop 触发 构造即绑定 线程启动前投递先进队列
-    this->uplink_box_ = std::make_unique<UplinkBox>(this->loop_,
+    // 两个邮箱的回调构造即绑定 唤醒 fd 留到 start 里注册
+    this->uplink_box_ = std::make_unique<UplinkBox>(
         [this](std::vector<CtrlUp>& ups) { this->handle_uplink(ups); });
-    this->result_box_ = std::make_unique<ResultBox>(this->loop_,
+    this->result_box_ = std::make_unique<ResultBox>(
         [this](std::vector<CtrlResult>& results) { this->handle_result(results); });
 }
 
@@ -34,6 +34,11 @@ bool CtrlDispatcher::start() {
         return true;
     }
     if (!this->loop_.init()) {
+        return false;
+    }
+    // 两个邮箱要先于线程把自己的唤醒 fd 注册进来
+    if (!this->uplink_box_->attach(this->loop_) ||
+        !this->result_box_->attach(this->loop_)) {
         return false;
     }
     this->started_ = true;
@@ -64,8 +69,7 @@ void CtrlDispatcher::handle_uplink(std::vector<CtrlUp>& ups) {
             case CtrlUpKind::WS_BINARY: {
                 Cmd cmd;
                 cmd.sess_ = std::move(up.sess_);
-                cmd.kind_ = (up.kind_ == CtrlUpKind::WS_BINARY) ? Cmd::Kind::WS_BINARY
-                                                                : Cmd::Kind::WS_TEXT;
+                cmd.kind_ = up.kind_;
                 cmd.data_ = std::move(up.text_);
                 this->enqueue_cmd(std::move(cmd), cmds);
                 break;
@@ -113,7 +117,7 @@ void CtrlDispatcher::advance_lane(Session* key, std::vector<Cmd>& cmds) {
     Lane& lane = it->second;
     if (lane.closing_) {
         lane.closing_ = false;  // 排定即清 不清收尾会反复排
-        cmds.push_back(Cmd{lane.sess_, Cmd::Kind::CLEANUP, {}});
+        cmds.push_back(Cmd{lane.sess_, CtrlUpKind::CLOSED, {}});
         return;
     }
     // 如果 pending_ 为空，说明代办业务已完全处理
@@ -154,7 +158,7 @@ void CtrlDispatcher::submit_cmds(std::vector<Cmd> cmds) {
     }
 }
 
-// 回程邮箱 sink 只在中控线程执行 一轮拿到整批响应
+// 回程邮箱回调只在中控线程执行 一轮拿到整批响应
 // 整批的帧合成一串一次分拣一次投放 整批的推进结果一次投池
 void CtrlDispatcher::handle_result(std::vector<CtrlResult>& results) {
     std::vector<CtrlDown> frames;
@@ -175,13 +179,13 @@ void CtrlDispatcher::run_business(Cmd cmd) {
     std::vector<CtrlDown> frames;
     try {
         switch (cmd.kind_) {
-            case Cmd::Kind::WS_TEXT:
+            case CtrlUpKind::WS_TEXT:
                 frames = this->route(sess, cmd.data_);
                 break;
-            case Cmd::Kind::WS_BINARY:
+            case CtrlUpKind::WS_BINARY:
                 frames = this->route_chunk(sess, cmd.data_);
                 break;
-            case Cmd::Kind::CLEANUP:
+            case CtrlUpKind::CLOSED:
                 frames = this->app_router_.cleanup(sess);
                 break;
         }

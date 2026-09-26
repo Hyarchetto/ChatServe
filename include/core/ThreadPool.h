@@ -7,9 +7,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <functional>
-#include <future>
 #include <atomic>
-#include <stdexcept>
 
 class ThreadPool {
 public:
@@ -21,15 +19,6 @@ public:
 
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
-
-    // 提交任务，返回 future
-    template<class F, class ...Args>
-    std::future<typename std::invoke_result_t<F, Args...>> submit(F&& f, Args&&... args);
-
-    // 投递一条不需要结果的任务
-    // submit 每次都要造 packaged_task 与 future 的共享状态 不要结果的调用方是白花这笔
-    template<class F>
-    void post(F&& f);
 
     // 投递一批任务，整批只加一次队列锁、只唤醒一次
     void post_batch(std::vector<std::function<void()>> tasks);
@@ -47,48 +36,3 @@ private:
 
     void worker_loop(size_t index);
 };
-
-// ==================== 模板实现 ====================
-
-template<class F, class ...Args>
-std::future<typename std::invoke_result_t<F, Args...>> ThreadPool::submit(F&& f, Args&&... args) {
-    using return_type = typename std::invoke_result_t<F, Args...>;
-
-    auto task = std::make_shared<std::packaged_task<return_type()>>(
-        [f = std::forward<F>(f), args = std::make_tuple(std::forward<Args>(args)...)]() mutable -> return_type {
-            return std::apply(std::move(f), std::move(args));
-        }
-    );
-    std::future<return_type> res = task->get_future();
-
-    {
-        std::unique_lock<std::mutex> lock(this->queue_mutex_);
-        // 两道门都在主流程之前，放行后才入队
-        if (this->stop_.load(std::memory_order_acquire)) {
-            throw std::runtime_error("线程池已失效");
-        }
-        if (this->tasks_.size() >= this->kMaxTaskNum) {
-            throw std::runtime_error("任务队列已满");
-        }
-        this->tasks_.emplace([task = std::move(task)]() mutable { (*task)(); });
-    }
-    // 一条任务一条 worker，多叫醒一个也只是空转一轮再睡回去
-    this->condition_.notify_one();
-    return res;
-}
-
-template<class F>
-void ThreadPool::post(F&& f) {
-    {
-        std::unique_lock<std::mutex> lock(this->queue_mutex_);
-        // 两道门都在主流程之前，放行后才入队
-        if (this->stop_.load(std::memory_order_acquire)) {
-            throw std::runtime_error("线程池已失效");
-        }
-        if (this->tasks_.size() >= this->kMaxTaskNum) {
-            throw std::runtime_error("任务队列已满");
-        }
-        this->tasks_.emplace(std::forward<F>(f));
-    }
-    this->condition_.notify_one();
-}

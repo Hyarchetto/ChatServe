@@ -5,8 +5,7 @@
 
 // ==================== 帧构造 ====================
 
-std::string WsFrame::build(WsOpcode opcode,
-                                   const std::string& payload) {
+std::string WsFrame::build(WsOpcode opcode, const std::string& payload) {
     return build_from_parts(opcode, {payload});
 }
 
