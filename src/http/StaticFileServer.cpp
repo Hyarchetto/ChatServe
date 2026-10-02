@@ -1,11 +1,11 @@
 // 静态文件服务 — 从磁盘读取文件并填充 HttpResponse
-// 错误页面的生成和重定向不在这里
 #include "http/StaticFileServer.h"
 #include "http/ErrorResponse.h"
 
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 
 namespace {
 
@@ -59,10 +59,10 @@ bool url_decode(const std::string& in, std::string& out) {
     return true;
 }
 
-}  // namespace
+} 
 
 std::string StaticFileServer::resolve(const std::string& request_path) {
-    // 反斜杠在 Windows 上是路径分隔符，解码后可能变成文件系统分隔符，一律拒绝
+    // 反斜杠在 Windows 上是路径分隔符，原始路径里字面出现即拒绝
     if (request_path.empty() || request_path[0] != '/' ||
         request_path.find('\\') != std::string::npos) {
         return {};
@@ -79,10 +79,10 @@ std::string StaticFileServer::resolve(const std::string& request_path) {
     }
 
     // 拼成 kRoot 之下的相对路径再规范化，.. 段在这一步被消掉
-    std::string normalized = std::filesystem::path(kRoot + decoded)
-                                 .lexically_normal().string();
-    // rfind 命中前缀时返回 0，非 0 即不以服务目录开头，越界的路径在这里被挡下
-    if (normalized.rfind(kRoot, 0) != 0) {
+    std::string normalized = std::filesystem::path(kRoot + decoded).lexically_normal().string();
+    // 规范化结果相对 kRoot 的位置，首段是 .. 说明 .. 段弹掉了 kRoot 本身，已越出服务目录
+    std::filesystem::path rel = std::filesystem::path(normalized).lexically_relative(kRoot);
+    if (rel.empty() || *rel.begin() == std::filesystem::path("..")) {
         return {};
     }
     // 规范化结果以目录分隔符续接时补回 ./，得到可直接打开的相对路径
@@ -92,17 +92,23 @@ std::string StaticFileServer::resolve(const std::string& request_path) {
 HttpResponse StaticFileServer::serve(const std::string& file_path) {
     HttpResponse resp;
 
+    // 目录与设备文件不是静态资源，按未找到处理
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file_path, ec)) {
+        return ErrorResponse::build_not_found(file_path);
+    }
+
     std::ifstream file(file_path, std::ios::binary | std::ios::ate);
     if (!file) {
         return ErrorResponse::build_not_found(file_path);
     }
 
-    // 取不到大小说明不是普通文件，目录与设备文件都走这里
+    // 定位失败按未找到处理
     std::streamsize size = file.tellg();
     if (size < 0) {
         return ErrorResponse::build_not_found(file_path);
     }
-    // 超过上限直接拒绝，不把一个可能很大的文件读进内存占着 io 线程
+    // 超过上限直接拒绝，不允许大文件读进内存占着 io 线程
     if (static_cast<size_t>(size) > kMaxFileSize) {
         return ErrorResponse::build_payload_too_large("文件超过单文件上限");
     }

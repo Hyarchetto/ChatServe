@@ -1,6 +1,4 @@
 // WebSocket Opcode — RFC 6455
-// 帧构造和帧解析都需要这个枚举，所以单独放一个文件
-// 这样构造器不用为了拿枚举而依赖解析器
 #pragma once
 
 #include <cstdint>

@@ -40,7 +40,7 @@ TEST(http_handler_closes_on_bad_request) {
 }
 
 TEST(http_handler_consumes_only_handled_bytes) {
-    // 同段到达两个请求 未要求关闭时两个都处理
+    // 同段到达两个请求，未要求关闭时两个都处理
     HttpHandler h;
     HttpAction a = h.handle("GET / HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\n\r\n");
     CHECK_EQ(a.responses_.size(), size_t(2));
@@ -49,7 +49,7 @@ TEST(http_handler_consumes_only_handled_bytes) {
 }
 
 TEST(http_handler_stops_at_close_request) {
-    // 前一个请求要求关闭 后一个不再处理
+    // 前一个请求要求关闭，后一个不再处理
     HttpHandler h;
     HttpAction a = h.handle("GET / HTTP/1.1\r\nConnection: close\r\n\r\nGET / HTTP/1.1\r\n\r\n");
     CHECK_EQ(a.responses_.size(), size_t(1));

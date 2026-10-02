@@ -1,4 +1,4 @@
-// ConnHandler — io worker 连接泵实现 业务不上本线程
+// ConnHandler — io worker 连接泵实现
 #include "conn/ConnHandler.h"
 #include "conn/Connection.h"
 
@@ -79,13 +79,13 @@ void ConnHandler::close_connection(const std::shared_ptr<Connection>& conn) {
 }
 
 // ======================================== 心跳 ========================================
-// 心跳节拍 取当前时刻扫一遍
+// 心跳节拍，取当前时刻扫一遍
 void ConnHandler::on_tick() {
     this->on_tick(std::chrono::steady_clock::now());
 }
 
-// 扫描全部连接 全静默过一个节拍的发 PING 过三个节拍的判死
-// 先整表快照再动作 入队与关闭都会改 conns_ 边遍历边动迭代器就失效了
+// 扫描全部连接，全静默过一个节拍的发 PING 过三个节拍的判死
+// 先整表快照再动作，入队与关闭都会改 conns_ 边遍历边动迭代器就失效了
 void ConnHandler::on_tick(std::chrono::steady_clock::time_point now) {
     std::vector<std::shared_ptr<Connection>> snapshot;
     snapshot.reserve(this->conns_.size());
@@ -114,7 +114,7 @@ void ConnHandler::on_tick(std::chrono::steady_clock::time_point now) {
                 break;
         }
     }
-    // 汇总一行 一个节拍里可能收掉上千条 逐条打会和其他线程的输出交错
+    // 汇总一行，一个节拍里可能收掉上千条，逐条打会和其他线程的输出交错
     if (closed > 0) {
         std::cerr << "心跳超时关闭 " << closed << " 条 最早空闲 " << oldest.count()
                   << "ms" << std::endl;
@@ -129,7 +129,7 @@ bool ConnHandler::pump_read(const std::shared_ptr<Connection>& conn) {
     while (true) {
         ssize_t n = recv(client_fd, temp_buffer, sizeof(temp_buffer), 0);
         if (n > 0) {
-            // 收到任何字节都算一次活跃 不区分是业务帧还是对 PING 的回包
+            // 收到任何字节都算一次活跃，不区分是业务帧还是对 PING 的回包
             conn->last_activity_ = std::chrono::steady_clock::now();
             conn->read_buf_.append(temp_buffer, static_cast<size_t>(n));
             continue;
@@ -155,19 +155,18 @@ void ConnHandler::handle_client_fd(const std::shared_ptr<Connection>& conn) {
     if (!this->pump_read(conn) || conn->read_buf_.empty()) {
         return;
     }
-    // 未升级走 HTTP 决策并施加 升级握手在施加里完成
+    // 未升级走 HTTP 决策并施加，升级握手在施加里完成
     if (!conn->ws_mode_) {
-        this->handle_http(conn, this->http_.handle({conn->read_buf_.data(),
-                                                   conn->read_buf_.size()}));
+        this->handle_http(conn, this->http_.handle({conn->read_buf_.data(), conn->read_buf_.size()}));
     }
-    // 已是 WS 或刚升级 同段到达的首批 WS 帧当帧处理
+    // 已是 WS 或刚升级，同段到达的首批 WS 帧当帧处理
     if (conn->ws_mode_ && !conn->read_buf_.empty()) {
         this->handle_ws(conn, this->ws_.handle({conn->read_buf_.data(), conn->read_buf_.size()},
                                                &conn->ws_frag_));
     }
 }
 
-// 本层是唯一同时看得见 HTTP 与 WS 的地方 升级握手在此交汇
+// 本层是唯一同时看得见 HTTP 与 WS 的地方，升级握手在此交汇
 void ConnHandler::handle_http(const std::shared_ptr<Connection>& conn, HttpAction action) {
     conn->read_buf_.consume(action.consumed_);
     for (auto& wire : action.responses_) {
@@ -175,14 +174,14 @@ void ConnHandler::handle_http(const std::shared_ptr<Connection>& conn, HttpActio
     }
     bool want_close = action.close_;
     if (action.upgrade_) {
-        // 构造 101 响应 key 缺失时为 400 握手失败同 400 语义 只关连接
+        // 构造 101 响应，key 缺失时为 400，握手失败同 400 语义，只关连接
         HttpResponse resp = WsUpgradeResponse::build(action.upgrade_request_);
         conn->ws_mode_ = (resp.status_ == 101);
         want_close = want_close || !conn->ws_mode_;
-        // 先定 ws_mode_ 再出包 出包若同步失败触发的关闭才判得对要不要报 CLOSED
+        // 先定 ws_mode_ 再出包，出包若同步失败触发的关闭才判得对要不要报 CLOSED
         this->writer_.enqueue(conn, resp.serialize());
     }
-    // 关闭意图在全部回包入队后统一表达 冲刷完由写引擎回调回收
+    // 关闭意图在全部回包入队后统一表达，冲刷完由写引擎回调回收
     if (want_close) {
         this->writer_.request_close(conn);
     }
@@ -194,9 +193,9 @@ void ConnHandler::handle_ws(const std::shared_ptr<Connection>& conn, WsAction ac
     for (auto& wire : action.responses_) {
         this->writer_.enqueue(conn, std::move(wire));
     }
-    // 上行中控 一条决策里的文本与二进制合成一批
+    // 上行中控，一条决策里的文本与二进制合成一批
     this->uplink_ws(conn, action);
-    // CLOSE 回包已入队 冲刷完由写引擎回调回收
+    // CLOSE 回包已入队，冲刷完由写引擎回调回收
     if (action.close_) {
         this->writer_.request_close(conn);
     }
@@ -221,14 +220,14 @@ void ConnHandler::uplink_ws(const std::shared_ptr<Connection>& conn, WsAction& a
 }
 
 // ======================================== 下行 ========================================
-// 整批一次处理 按目标连接逐条组帧投给写调度
+// 整批一次处理，按目标连接逐条组帧投给写调度
 void ConnHandler::downlink_batch(std::vector<CtrlDown>& downs) {
     for (auto& down : downs) {
         auto it = this->conns_.find(down.sess_.get());
         if (it == this->conns_.end()) {
-            continue;  // 目标已关闭 弃帧
+            continue;  // 目标已关闭，弃帧
         }
-        // 载荷类型到帧类型的映射 方向由 ctrl 层指向 ws 层
+        // 载荷类型到帧类型的映射，方向由 ctrl 层指向 ws 层
         const WsOpcode opcode = (down.kind_ == CtrlDownKind::WS_BINARY)
                                     ? WsOpcode::BINARY
                                     : WsOpcode::TEXT;

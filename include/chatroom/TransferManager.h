@@ -40,7 +40,7 @@ struct TransferSession {
     size_t next_req_offset_ = 0;                            // 下一个要请求的偏移量，>= filesize_ 表示所有块已请求
     size_t total_received_ = 0;                             // 已从上传方收到的 payload 字节数
 
-    std::set<size_t> pending_acks_;                         // 在途未确认的偏移 兼做去重与窗口占用
+    std::set<size_t> pending_acks_;                         // 在途未确认的偏移，兼做去重与窗口占用
 
     // 是否所有分块已收到且下载方已确认
     bool is_complete() const {
@@ -142,15 +142,15 @@ public:
     // 按文件取消单个文件，返回被孤立的下载方
     CancelResult cancel_file(const std::string& file_id);
 
-    // 取消会话，仅清会话不碰文件注册，返回是否找到会话
+    // 取消会话，返回是否找到会话
     bool cancel_session(const std::shared_ptr<Session>& downloader,
                         const std::string& file_id);
 
 private:
     std::unordered_map<std::string, FileRegistration> registrations_;           // 文件注册表，file_id -> 注册信息
     std::unordered_map<uint64_t, TransferSession> sessions_;                    // 活跃传输会话表，session_id -> 会话
-    // 身份索引键为连接对象指针 不持有所有权 连接由注册和会话持有
-    // 用指针而非 fd 标识对端 连接断开后即使 fd 被重用也不会误命中
+    // 身份索引键为连接对象指针，不持有所有权，连接由注册和会话持有
+    // 用指针而非 fd 标识对端，连接断开后即使 fd 被重用也不会误命中
     std::unordered_map<Session*, std::vector<std::string>> uploader_files_;     // 上传方 -> 其注册文件句柄列表
     std::unordered_map<Session*, std::vector<uint64_t>> uploader_sessions_;     // 上传方 -> 其活跃会话 id 列表
     std::unordered_map<Session*, std::vector<uint64_t>> downloader_sessions_;   // 下载方 -> 其活跃会话 id 列表
@@ -160,7 +160,7 @@ private:
 
     // 生成文件句柄
     std::string create_file_id();
-    // 生成不与已有注册冲突的文件句柄 调用方须已持锁
+    // 生成不与已有注册冲突的文件句柄，调用方须已持锁
     std::string create_unique_file_id();
     // 文件注销
     void unregister_file(const std::string& file_id);
@@ -168,7 +168,7 @@ private:
     void cleanup_session(uint64_t session_id);
     // 取消单个会话
     void cancel_session_impl(uint64_t session_id, CancelResult* result);
-    // 锁内查找 file_id + 下载方连接 的最新会话 id，找不到返回 nullopt
+    // 锁内查找由 file_id 与下载方连接共同定位的会话 id，找不到返回 nullopt
     std::optional<uint64_t> find_session_id(const std::string& file_id,
                                             const Session* downloader) const;
     // 窗口有空位时生成下一个 DWREQ

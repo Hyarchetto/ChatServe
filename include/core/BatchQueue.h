@@ -1,9 +1,4 @@
-// BatchQueue — 跨线程单消费者队列 攒批交出
-// 生产方追加不等 消费方一次拿走整批 两个队列互换容量留住 稳态下不产生分配
-// 入队序即 FIFO 单生产者对单消费者的顺序经此保持
-//
-// draining_ 记着消费方的排空是否在途 在途时生产方只追加不再唤醒
-// 本类只负责攒批 唤醒手段由持有它的组件决定 队列本身不认识事件循环
+// BatchQueue — 跨线程队列，攒批交出
 #pragma once
 
 #include <functional>
@@ -14,7 +9,7 @@
 template <typename T>
 class BatchQueue {
 public:
-    // 回调只被消费线程执行 一次拿到整批 逐条 move 走内容
+    // 回调只被消费线程执行，一次拿到整批，逐条 move 走内容
     using Callback = std::function<void(std::vector<T>&)>;
 
     explicit BatchQueue(Callback callback) : callback_(std::move(callback)) {}
@@ -50,6 +45,7 @@ public:
                     this->draining_ = false;
                     return;
                 }
+                // 两个队列互换，容量跟着过去，稳态下不产生分配
                 this->ready_.swap(this->waiting_);
             }
             this->callback_(this->ready_);
@@ -67,7 +63,7 @@ private:
 
     Callback callback_;
     std::mutex mtx_;
-    std::vector<T> ready_;          // 就绪队列 只消费线程碰
-    std::vector<T> waiting_;        // 等待队列 生产方追加 锁保护
-    bool draining_ = false;         // 有排空在途 锁保护
+    std::vector<T> ready_;          // 就绪队列，只消费线程碰
+    std::vector<T> waiting_;        // 等待队列，生产方追加，锁保护
+    bool draining_ = false;         // 排空是否在途，在途时生产方只追加不再唤醒，锁保护
 };

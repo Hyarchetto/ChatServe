@@ -1,5 +1,4 @@
 // WebSocket 帧解析 — RFC 6455
-// 本文件只做一件事：从 TCP buffer 中解析出 WebSocket 帧
 #pragma once
 
 #include <string>

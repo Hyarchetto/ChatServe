@@ -1,4 +1,4 @@
-// LazyBuffer 用例 — 尾部追加 头部消费 阈值压缩
+// LazyBuffer 用例 — 尾部追加，头部消费，阈值压缩
 #include "TestMain.h"
 
 #include "conn/LazyBuffer.h"
@@ -28,7 +28,7 @@ TEST(lazy_buffer_becomes_empty_after_full_consume) {
 }
 
 TEST(lazy_buffer_consume_more_than_available_clears) {
-    // 消费量超过已有字节时按清零处理 不越界
+    // 消费量超过已有字节时按清零处理，不越界
     LazyBuffer buf;
     buf.append("abc");
     buf.consume(99);
@@ -37,7 +37,7 @@ TEST(lazy_buffer_consume_more_than_available_clears) {
 }
 
 TEST(lazy_buffer_compacts_after_head_passes_threshold) {
-    // 已消费量过半且越过阈值时物理压缩 剩余内容不变
+    // 已消费量过半且越过阈值时物理压缩，剩余内容不变
     LazyBuffer buf;
     buf.append(std::string(8192, 'x'));
     buf.consume(4097);

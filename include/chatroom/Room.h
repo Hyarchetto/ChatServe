@@ -1,10 +1,10 @@
 // 聊天室 — 管理房间内连接集合
-// 成员的增删与过期弱引用清理只从 RoomManager 的 join/leave 进 故为私有
-// 昵称归房间持有 它随成员资格生灭 会话退出后不该还挂着上次进房的昵称
+// 成员的增删与过期弱引用清理只从 RoomManager 的 join/leave 进，故为私有
+// 昵称归房间持有，它随成员资格生灭，会话退出后不该还挂着上次进房的昵称
 // 广播方只取成员快照 get_connections，不自己判断成员是否重复或过期
 //
-// 锁序：RoomManager::mtx_ 与 Room::mtx_ 是唯一的嵌套方向，Room::mtx_
-// 与 TransferManager::mtx_ 从不嵌套，持锁期间只调 Room 自己的方法
+// 锁序：唯一会嵌套的一对是 RoomManager::mtx_ → Room::mtx_
+// 持 Room 的锁期间只调 Room 自己的方法
 
 #pragma once
 
@@ -19,10 +19,10 @@
 
 class Room {
 public:
-    // 成员快照 弱引用已转活 昵称已拷出 锁外随便用
+    // 成员快照，弱引用已转活，昵称已拷出，锁外随便用
     struct Member {
         std::shared_ptr<Session> sess_;   // 寻址用
-        std::string nick_;                // 进房那一刻定下 此后不动
+        std::string nick_;                // 进房那一刻定下，此后不动
     };
 
     // 房间人数上限，满员时 add_num 拒绝
@@ -36,7 +36,7 @@ public:
 private:
     friend class RoomManager;
 
-    // 成员条目 弱引用不吊住连接 昵称随这条entry一起进出
+    // 成员条目，弱引用不吊住连接，昵称随这条entry一起进出
     struct Entry {
         std::weak_ptr<Session> sess_;
         std::string nick_;

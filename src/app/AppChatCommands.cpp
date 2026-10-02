@@ -20,7 +20,7 @@ void AppRouter::register_chat() {
         if (!sess->room_.empty()) {
             return results;
         }
-        // 昵称随成员资格落进房间 满员检查与成员快照在同一把锁下完成
+        // 昵称随成员资格落进房间，满员检查与成员快照在同一把锁下完成
         JoinResult joined = this->room_mgr_.join_room(msg.param(0), sess, msg.param(1));
         if (!joined.valid_) {
             results.push_back({sess,
@@ -41,13 +41,13 @@ void AppRouter::register_chat() {
     });
 
     // ========== 聊天消息 ==========
-    // 收到 MSG|内容 广播给房间内除自己外的所有人
+    // 收到 MSG|内容，广播给房间内除自己外的所有人
     this->on("MSG", [this](std::shared_ptr<Session> sess,
                            const AppMessage& msg) -> std::vector<CtrlDown> {
         std::vector<CtrlDown> results;
-        // 未加入房间则房间查不到 广播自然空转
+        // 未加入房间则房间查不到，广播自然空转
         auto room = this->room_mgr_.find_room(sess->room_);
-        // 构建文本帧 只带发送者 fd 昵称由客户端从本地映射解析
+        // 构建文本帧，只带发送者 fd 昵称由客户端从本地映射解析
         std::string wire = AppParser::build_frame("MSG", std::to_string(sess->fd_),
                                                   msg.rest_);
         broadcast_to_room(room, sess.get(), wire, results);

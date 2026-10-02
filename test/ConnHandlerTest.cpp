@@ -14,7 +14,7 @@
 
 namespace {
 
-// 一组装配好的 io 处理器 上行邮箱的回调本用例用不到故为空
+// 一组装配好的 io 处理器，上行邮箱的回调本用例用不到故为空
 // 两个邮箱都照 Reactor 的装配顺序 attach 顺带覆盖唤醒 fd 的注册
 struct Fixture {
     EventLoop loop_;
@@ -30,7 +30,7 @@ struct Fixture {
     }
 };
 
-// 造一对已连接 socket 并给测试端设收超时 判错时不会把整个用例挂住
+// 造一对已连接 socket 并给测试端设收超时，判错时不会把整个用例挂住
 void make_pair(int sv[2]) {
     CHECK_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
     timeval tv{};
@@ -46,7 +46,7 @@ TEST(conn_handler_closes_connection_idle_in_both_directions) {
     make_pair(sv);
     f.handler_.add_connection(sv[0]);
 
-    // 两个方向都超过硬超时 未升级的连接同样判死
+    // 两个方向都超过硬超时，未升级的连接同样判死
     f.handler_.on_tick(std::chrono::steady_clock::now() + std::chrono::seconds(100));
 
     char buf[8];
@@ -62,7 +62,7 @@ TEST(conn_handler_pings_idle_websocket) {
 
     std::thread runner([&f]() { f.loop_.loop(); });
 
-    // 走完握手连接才进入 ws 形态 未升级的连接不发 PING
+    // 走完握手连接才进入 ws 形态，未升级的连接不发 PING
     const std::string req =
         "GET /chat HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
@@ -79,20 +79,20 @@ TEST(conn_handler_pings_idle_websocket) {
     }
     CHECK(resp.find("101") != std::string::npos);
 
-    // 注入未来的时刻驱动节拍 经 post 仍在 io 线程执行
-    // 取六十秒 入站静默过一个节拍该发 PING 出站还在硬超时之内不该判死
+    // 注入未来的时刻驱动节拍，经 post 仍在 io 线程执行
+    // 取六十秒，入站静默过一个节拍该发 PING 出站还在硬超时之内不该判死
     f.loop_.post([&f]() {
         f.handler_.on_tick(std::chrono::steady_clock::now() + std::chrono::seconds(60));
     });
 
-    // 一条空的 PING 帧 服务端出帧不带掩码 载荷长度为 0
+    // 一条空的 PING 帧，服务端出帧不带掩码，载荷长度为 0
     unsigned char ping[8] = {0};
     ssize_t n = recv(sv[1], ping, sizeof(ping), 0);
     CHECK_EQ(n, ssize_t(2));
     CHECK_EQ(ping[0], static_cast<unsigned char>(0x89));
     CHECK_EQ(ping[1], static_cast<unsigned char>(0x00));
 
-    // 探测帧自己写出去了不算出站推进 否则连接每轮都被自己续命 两个方向都静默也判不死
+    // 探测帧自己写出去了不算出站推进，否则连接每轮都被自己续命，两个方向都静默也判不死
     f.loop_.post([&f]() {
         f.handler_.on_tick(std::chrono::steady_clock::now() + std::chrono::seconds(100));
     });

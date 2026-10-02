@@ -1,4 +1,4 @@
-// Acceptor — 监听端口接受新连接 纯监听逻辑 不接触事件循环
+// Acceptor — 监听端口接受新连接，纯监听逻辑
 #include "server/Acceptor.h"
 
 #include <sys/socket.h>

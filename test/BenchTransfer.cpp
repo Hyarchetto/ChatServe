@@ -1,13 +1,13 @@
 // BenchTransfer — WebSocket 文件传输吞吐压测
 //
-// 每房间一对连接 上传方与下载方 与消息中继压测的收发分离同构
-//   上传方 注册文件元数据后按 DWREQ 应答 BINARY 分块 分块字节现场生成 不读磁盘
-//   下载方 收到 FILE 广播后发起 DOWNLOAD 每收一块回 DWACK 驱动滑动窗口前进
+// 每房间一对连接，上传方与下载方
+//   上传方，注册文件元数据后按 DWREQ 应答 BINARY 分块，分块字节现场生成，不读磁盘
+//   下载方，收到 FILE 广播后发起 DOWNLOAD 每收一块回 DWACK 驱动滑动窗口前进
 //
-// 与消息中继的关键差别是传输自带流控 上传方收不到 DWREQ 就发不出下一块 服务端
-// 在途数据有界 客户端不限速也灌不爆服务端 因此这里没有限速参数
+// 与消息中继的关键差别是传输自带流控，上传方收不到 DWREQ 就发不出下一块，服务端
+// 在途数据有界，客户端不限速也灌不爆服务端，因此这里没有限速参数
 //
-// 中继吞吐 = 下载方实收分块正文总量 / 时长 上传方发出的字节数用于交叉验证
+// 中继吞吐 = 下载方实收分块正文总量 / 时长，上传方发出的字节数用于交叉验证
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -32,13 +32,13 @@ namespace {
 
 constexpr int kPort = 8080;
 constexpr const char* kHost = "127.0.0.1";
-// 与服务端 TransferManager::kChunkSize 一致 决定模板帧的载荷长度
+// 与服务端 TransferSession::kChunkSize 一致，决定模板帧的载荷长度
 constexpr size_t kChunkSize = 256 * 1024;
 // BINARY 帧载荷前缀 [session_id:8][offset:8][data_size:4]
 constexpr size_t kBinaryHeader = 20;
 constexpr size_t kRecvBuf = 512 * 1024;
 constexpr int kIoTimeoutSec = 10;
-// 掩码固定 载荷恒定 整帧一次算好反复发
+// 掩码固定，载荷恒定，整帧一次算好反复发
 constexpr uint8_t kMaskKey[4] = {0x12, 0x34, 0x56, 0x78};
 
 using Clock = std::chrono::steady_clock;
@@ -55,12 +55,12 @@ struct Pair {
 struct Bench {
     std::atomic<int> joined_{0};        // 已完成入房应答的下载方
     std::atomic<int> broken_{0};        // 中途失败的连接数
-    std::atomic<bool> go_{false};       // 主线程放行 各下载方同时发起传输
+    std::atomic<bool> go_{false};       // 主线程放行，各下载方同时发起传输
     std::atomic<size_t> sent_{0};       // 上传方发出的分块正文总量
     std::atomic<size_t> got_{0};        // 下载方实收的分块正文总量
 };
 
-// 设收发超时 对端长时间无动静时让阻塞调用返回 失败返回 false
+// 设收发超时，对端长时间无动静时让阻塞调用返回，失败返回 false
 bool set_timeouts(int fd) {
     timeval tv{};
     tv.tv_sec = kIoTimeoutSec;
@@ -68,7 +68,7 @@ bool set_timeouts(int fd) {
            ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
 }
 
-// 建连并完成 WebSocket 握手 成功返回 fd 失败返回 -1
+// 建连并完成 WebSocket 握手，成功返回 fd 失败返回 -1
 int connect_ws() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -104,7 +104,7 @@ int connect_ws() {
         }
         head.append(buf, static_cast<size_t>(n));
     }
-    // 状态行前缀比对 不能用 compare(0, 首行长度, ...) 长度不等必然失败
+    // 状态行前缀比对，不能用 compare(0, 首行长度, ...) 长度不等必然失败
     if (head.rfind("HTTP/1.1 101", 0) != 0 || !set_timeouts(fd)) {
         ::close(fd);
         return -1;
@@ -139,14 +139,14 @@ std::string build_client_frame(WsOpcode opcode, const std::string& payload) {
     return frame;
 }
 
-// 一条服务端下行帧 服务端不加掩码 也不对应用消息做分片
+// 一条服务端下行帧，服务端不加掩码，也不对应用消息做分片
 struct ServerFrame {
     bool text_ = false;
     bool binary_ = false;
     std::string payload_;
 };
 
-// 从 buf 的 pos 处解一条服务端帧 数据不足一帧时返回 false 且不推进 pos
+// 从 buf 的 pos 处解一条服务端帧，数据不足一帧时返回 false 且不推进 pos
 bool take_frame(const std::string& buf, size_t& pos, ServerFrame& out) {
     if (buf.size() - pos < 2) {
         return false;
@@ -154,7 +154,7 @@ bool take_frame(const std::string& buf, size_t& pos, ServerFrame& out) {
     const uint8_t b0 = static_cast<uint8_t>(buf[pos]);
     const uint8_t b1 = static_cast<uint8_t>(buf[pos + 1]);
     if ((b0 & 0x80) == 0 || (b1 & 0x80) != 0) {
-        return false;  // 不接分片 也不接带掩码的下行帧
+        return false;  // 不接分片，也不接带掩码的下行帧
     }
     const uint8_t opcode = b0 & 0x0F;
     uint64_t len = b1 & 0x7F;
@@ -187,7 +187,7 @@ bool take_frame(const std::string& buf, size_t& pos, ServerFrame& out) {
     return true;
 }
 
-// 取竖线分隔协议帧里命令字之后的第 idx 个参数 不足返回空串
+// 取竖线分隔协议帧里命令字之后的第 idx 个参数，不足返回空串
 std::string param_at(const std::string& frame, size_t idx) {
     size_t start = frame.find('|');
     if (start == std::string::npos) {
@@ -205,8 +205,8 @@ std::string param_at(const std::string& frame, size_t idx) {
     return frame.substr(start, end == std::string::npos ? std::string::npos : end - start);
 }
 
-// 把 20 字节分块头按固定掩码写进模板帧 载荷主体不变
-// 掩码按位置异或 固定掩码下改写头部无需重算整个载荷
+// 把 20 字节分块头按固定掩码写进模板帧，载荷主体不变
+// 掩码按位置异或，固定掩码下改写头部无需重算整个载荷
 void patch_header(std::string& frame, size_t payload_off, uint64_t session_id,
                   uint64_t offset, uint32_t size) {
     uint8_t h[kBinaryHeader];
@@ -218,7 +218,7 @@ void patch_header(std::string& frame, size_t payload_off, uint64_t session_id,
     }
 }
 
-// 整条分块帧 分块大小不足一整块时只能现组
+// 整条分块帧，分块大小不足一整块时只能现组
 std::string build_chunk_frame(uint64_t session_id, uint64_t offset, size_t size) {
     std::string payload(kBinaryHeader + size, 'x');
     uint8_t h[kBinaryHeader];
@@ -230,9 +230,9 @@ std::string build_chunk_frame(uint64_t session_id, uint64_t offset, size_t size)
     return build_client_frame(WsOpcode::BINARY, payload);
 }
 
-// 上传方 注册文件后阻塞在 DWREQ 上 每来一条回一块
-// 收不到 DWREQ 就发不出下一块 窗口与在途字节全由服务端与下载方控制
-// tmpl 按值收 每个线程各持一份可改的模板帧 免去跨线程共享可变状态
+// 上传方，注册文件后阻塞在 DWREQ 上，每来一条回一块
+// 收不到 DWREQ 就发不出下一块，窗口与在途字节全由服务端与下载方控制
+// tmpl 按值收，每个线程各持一份可改的模板帧，免去跨线程共享可变状态
 void uploader_loop(Pair& pair, Bench& bench, std::string tmpl, size_t payload_off) {
     char buf[kRecvBuf];
     std::string acc;
@@ -240,7 +240,7 @@ void uploader_loop(Pair& pair, Bench& bench, std::string tmpl, size_t payload_of
     while (true) {
         ssize_t n = ::recv(pair.up_fd_, buf, sizeof(buf), 0);
         if (n < 0 && errno == EAGAIN) {
-            continue;  // 收包超时 传输收尾时对端不再请求 主线程随后关掉本连接
+            continue;  // 收包超时，传输收尾时对端不再请求，主线程随后关掉本连接
         }
         if (n <= 0) {
             break;
@@ -262,7 +262,7 @@ void uploader_loop(Pair& pair, Bench& bench, std::string tmpl, size_t payload_of
             if (size == 0 || offset + size > pair.filesize_) {
                 continue;
             }
-            // 满块走模板 只改头 20 字节 末块长度不同只能现组
+            // 满块走模板，只改头 20 字节，末块长度不同只能现组
             if (size == kChunkSize) {
                 patch_header(tmpl, payload_off, session_id, offset,
                              static_cast<uint32_t>(size));
@@ -276,17 +276,17 @@ void uploader_loop(Pair& pair, Bench& bench, std::string tmpl, size_t payload_of
         }
         acc.erase(0, pos);
     }
-    // 上传方收满后不再被请求 由主线程 shutdown 叫停 退出本身不代表失败
-    // 它若中途出错 下载方就收不满 完成率会直接体现
+    // 上传方收满后不再被请求，由主线程 shutdown 叫停，退出本身不代表失败
+    // 它若中途出错，下载方就收不满，完成率会直接体现
 }
 
-// 下载方 等入房应答 等 FILE 广播 放行后发起下载并排空到收满
+// 下载方，等入房应答，等 FILE 广播，放行后发起下载并排空到收满
 void downloader_loop(Pair& pair, Bench& bench) {
     char buf[kRecvBuf];
     std::string acc;
     ServerFrame frame;
 
-    // 先等入房应答 主线程据此确认下载方已在房内 再让上传方注册文件
+    // 先等入房应答，主线程据此确认下载方已在房内，再让上传方注册文件
     bool joined = false;
     std::string file_id;
     while (!joined || file_id.empty()) {
@@ -340,7 +340,7 @@ void downloader_loop(Pair& pair, Bench& bench) {
         size_t pos = 0;
         while (take_frame(acc, pos, frame)) {
             if (!frame.binary_) {
-                // DWSTART DWDATA DWNDONE 都只用来驱动前端卡片 压测只认二进制块
+                // DWSTART DWDATA DWNDONE 都只用来驱动前端卡片，压测只认二进制块
                 if (frame.text_ && frame.payload_.rfind("DWERR|", 0) == 0) {
                     clean = false;
                 }
@@ -349,7 +349,7 @@ void downloader_loop(Pair& pair, Bench& bench) {
             if (frame.payload_.size() < kBinaryHeader) {
                 continue;
             }
-            // BINARY 载荷自带头 确认分块直接从头里取会话号与偏移
+            // BINARY 载荷自带头，确认分块直接从头里取会话号与偏移
             uint64_t session_id = 0;
             uint64_t offset = 0;
             std::memcpy(&session_id, frame.payload_.data(), 8);
@@ -382,9 +382,9 @@ int main(int argc, char** argv) {
     std::printf("房间数 %d  每房间一上传方一下载方 共 %d 条连接\n", rooms, rooms * 2);
     std::printf("每房间文件 %zu MB  分块 %zu KB  窗口 8\n\n", file_mb, kChunkSize / 1024);
 
-    // 建连入房 上传方与下载方同处一室
-    // 先建满全部上传方再建全部下载方 服务端按 fd 分配 io 归属 成对建连会让
-    // 相邻 fd 走上传方与下载方的交替规律 把整类角色压给同一条 io 从属
+    // 建连入房，上传方与下载方同处一室
+    // 先建满全部上传方再建全部下载方，服务端按 fd 分配 io 归属，成对建连会让
+    // 相邻 fd 走上传方与下载方的交替规律，把整类角色压给同一条 io 从属
     std::vector<Pair> pairs(static_cast<size_t>(rooms));
     for (int i = 0; i < rooms; ++i) {
         Pair& pair = pairs[static_cast<size_t>(i)];
@@ -425,14 +425,14 @@ int main(int argc, char** argv) {
         dthreads.emplace_back(downloader_loop, std::ref(pairs[i]), std::ref(bench));
     }
 
-    // 等下载方全部入房 此后注册文件 广播不会漏发
+    // 等下载方全部入房，此后注册文件，广播不会漏发
     const auto join_deadline = Clock::now() + std::chrono::seconds(10);
     while (bench.joined_.load() < ok_pairs && Clock::now() < join_deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     std::printf("入房就绪 %d / %d 对\n", bench.joined_.load(), ok_pairs);
 
-    // 注册文件元数据 只报文件名与大小 分块等到 DWREQ 再发
+    // 注册文件元数据，只报文件名与大小，分块等到 DWREQ 再发
     const std::string upload =
         build_client_frame(WsOpcode::TEXT,
                            "UPLOAD|bench.bin|" + std::to_string(filesize));
@@ -442,7 +442,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // 整条满块帧 载荷先填好 掩码固定 各分块只改前 20 字节
+    // 整条满块帧，载荷先填好，掩码固定，各分块只改前 20 字节
     std::string tmpl = build_client_frame(
         WsOpcode::BINARY, std::string(kBinaryHeader + kChunkSize, 'x'));
     const size_t payload_off = tmpl.size() - kBinaryHeader - kChunkSize;
@@ -463,7 +463,7 @@ int main(int argc, char** argv) {
     }
     const double wall = std::chrono::duration<double>(Clock::now() - wall_start).count();
 
-    // 下载方收满后不再请求 上传方阻塞在 recv 上 关掉连接让它退出
+    // 下载方收满后不再请求，上传方阻塞在 recv 上，关掉连接让它退出
     for (Pair& pair : pairs) {
         if (pair.up_fd_ >= 0) {
             ::shutdown(pair.up_fd_, SHUT_RDWR);

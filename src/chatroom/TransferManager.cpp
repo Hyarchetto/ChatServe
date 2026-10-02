@@ -16,7 +16,7 @@ std::string TransferManager::register_file(const std::string& filename, size_t f
                                              const std::shared_ptr<Session>& uploader) {
     std::lock_guard<std::mutex> lock(this->mtx_);
 
-    // 零字节文件没有分块可传，注册进来只会让每次下载都建一个永远走不完的会话
+    // 零字节文件没有分块可传，直接拒收
     if (filesize == 0) {
         return {};
     }
@@ -130,7 +130,7 @@ ChunkResult TransferManager::handle_chunk_data(const Session* from, const std::s
         return result;
     }
 
-    // 去重 该偏移仍在窗口内说明已收过
+    // 去重，该偏移仍在窗口内说明已收过
     if (ts.pending_acks_.count(off)) {
         return result;
     }
@@ -166,7 +166,7 @@ AckResult TransferManager::handle_ack(const Session* from, uint64_t session_id, 
         return result;
     }
 
-    // 移除待确认记录 不在窗口内则非法 ACK
+    // 移除待确认记录，不在窗口内则非法 ACK
     if (ts.pending_acks_.erase(offset) == 0) {
         return result;
     }
@@ -281,7 +281,7 @@ std::string TransferManager::create_file_id() {
     return oss.str();
 }
 
-// 生成不与已有注册冲突的文件句柄 调用方须已持锁
+// 生成不与已有注册冲突的文件句柄，调用方须已持锁
 // 同纳秒内的重复由随机段区分，撞上已有句柄再换一个重试
 std::string TransferManager::create_unique_file_id() {
     for (int attempt = 0; attempt < 32; ++attempt) {
@@ -335,7 +335,7 @@ void TransferManager::cancel_session_impl(uint64_t session_id, CancelResult* res
     this->cleanup_session(session_id);
 }
 
-// 锁内按 file_id + 下载方连接 找最新会话 id，找不到返回 nullopt
+// 锁内按 file_id + 下载方连接，找最新会话 id，找不到返回 nullopt
 std::optional<uint64_t> TransferManager::find_session_id(const std::string& file_id,
                                                          const Session* downloader) const {
     std::optional<uint64_t> found;

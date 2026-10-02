@@ -1,8 +1,5 @@
-// 事件循环
-// 封装了 epoll 和跨线程任务投递机制，不包含任何业务
-// 每个 EventLoop 独占一个线程，无限循环执行 epoll_wait
-// 线程池干完活了就用 post 把结果塞回 IO 线程
-// post 只投递到目标线程执行 不判当前线程 一律入队唤醒
+// 事件循环 — 封装 epoll 与跨线程任务投递
+// 每个 EventLoop 独占一个线程
 #pragma once
 
 #include <atomic>
@@ -15,7 +12,6 @@
 
 class EventLoop {
 public:
-    // 构造时不做任何事情，真正的初始化在 init 中完成
     EventLoop();
     ~EventLoop();
 
@@ -23,12 +19,9 @@ public:
 
     // 创建 epoll 句柄和 eventfd，把 eventfd 注册到 epoll 中
     bool init();
-
-    // 事件循环主函数
-    // 本函数不会返回，直到 quit 被调用
+    // 事件循环主函数，不会返回，直到 quit 被调用
     void loop();
-
-    // 设置退出标志并唤醒 epoll_wait 可在线程池或信号处理器中调用
+    // 设置退出标志并唤醒 epoll_wait，可在线程池或信号处理器中调用
     void quit();
 
     // ==================== epoll 事件注册 ====================
@@ -48,13 +41,13 @@ public:
     void del_event(int fd);
 
     // 修改一个 fd 在 epoll 中的监听事件
-    // 失败返回 false，ET 下写事件没挂上去就是永久饥饿，调用方据此关连接
+    // 失败返回 false，调用方据此关连接
     bool mod_event(int fd, uint32_t events);
 
     // ==================== 跨线程任务投递 ====================
 
-    // 把回调投递到本循环所属线程执行 跨线程安全
-    // 只入队并唤醒 不保证立即执行 本 loop 线程自己调也一样入队
+    // 把回调投递到本循环所属线程执行，队列内置锁，跨线程安全
+    // 只入队并唤醒，本 loop 线程自己调也一样
     // 已有待办在途时只入队不再写 eventfd 重复唤醒由队列自己合并掉
     void post(std::function<void()> cb);
 
@@ -63,7 +56,7 @@ public:
 
 private:
     int epollfd_ = -1;           // epoll 实例的文件描述符
-    FdRegistration wake_;        // 唤醒 fd 的注册 建 fd 归 init 本类只管接管与读写
+    FdRegistration wake_;        // 唤醒 fd 的注册
 
     // 每个 fd 关联的三个回调：读、写、错误
     struct EventCallbacks {
@@ -75,12 +68,12 @@ private:
     // fd 到其三个回调的映射关系表
     std::unordered_map<int, EventCallbacks> event_map_;
 
-    // 跨线程投递进来的待办 收成一体 攒批执行
+    // 跨线程投递进来的待办，收成一体，攒批执行
     BatchQueue<std::function<void()>> functors_;
 
     std::atomic<bool> quit_ = false;   // 退出标志，loop 函数每轮都会检查
 
-    // 读干唤醒计数 接着排空待办
+    // 读干唤醒计数，接着排空待办
     void handle_wakeup();
 
     static constexpr int kMaxEvents = 1024;

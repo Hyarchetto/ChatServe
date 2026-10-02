@@ -1,4 +1,4 @@
-// TransferManager 用例 — 文件注册 窗口启动 分块转发 ACK 推进
+// TransferManager 用例 — 文件注册，窗口启动，分块转发，ACK 推进
 #include "TestMain.h"
 
 #include <cstdint>
@@ -11,7 +11,7 @@
 static constexpr size_t kChunk = TransferSession::kChunkSize;
 static constexpr size_t kWindow = TransferSession::kWindowSize;
 
-// 造一个 20 字节分块头加载荷 头部按小端落字节 与 TransferManager 的 memcpy 读法一致
+// 造一个 20 字节分块头加载荷，头部按小端落字节
 static std::string make_chunk(uint64_t session_id, uint64_t offset, const std::string& payload) {
     uint32_t size = static_cast<uint32_t>(payload.size());
     std::string d;
@@ -55,7 +55,7 @@ TEST(transfer_manager_starts_with_full_window) {
     TransferStart start = tm.start_transfer(id, downloader, 0);
     CHECK(start.valid_);
     CHECK_EQ(start.requests_.size(), kWindow);
-    // 窗口逐块推进 每块偏移相差一个分块
+    // 窗口逐块推进，每块偏移相差一个分块
     for (size_t i = 0; i < start.requests_.size(); ++i) {
         CHECK_EQ(start.requests_[i].offset_, i * kChunk);
         CHECK_EQ(start.requests_[i].size_, kChunk);
@@ -64,7 +64,7 @@ TEST(transfer_manager_starts_with_full_window) {
 }
 
 TEST(transfer_manager_shortens_last_chunk) {
-    // 末块不足一个分块 请求长度按剩余字节算
+    // 末块不足一个分块，请求长度按剩余字节算
     TransferManager tm;
     auto uploader = std::make_shared<Session>(1, 0);
     auto downloader = std::make_shared<Session>(2, 0);
@@ -96,7 +96,7 @@ TEST(transfer_manager_rejects_transfer_from_dead_uploader) {
     CHECK(!tm.start_transfer(id, downloader, 0).valid_);
 }
 
-// 起一次传输 返回会话 id
+// 起一次传输，返回会话 id
 static uint64_t begin_transfer(TransferManager& tm, const std::string& file_id,
                                const std::shared_ptr<Session>& downloader) {
     TransferStart start = tm.start_transfer(file_id, downloader, 0);
@@ -181,7 +181,7 @@ TEST(transfer_manager_rejects_ack_from_other_session) {
 }
 
 TEST(transfer_manager_rejects_ack_for_unrequested_offset) {
-    // 该偏移不在待确认窗口内 属非法确认
+    // 该偏移不在待确认窗口内，属非法确认
     TransferManager tm;
     auto uploader = std::make_shared<Session>(1, 0);
     auto downloader = std::make_shared<Session>(2, 0);
@@ -203,6 +203,6 @@ TEST(transfer_manager_cancels_session_by_connection) {
     CHECK_EQ(cr.cancelled_.size(), size_t(1));
     CHECK_EQ(cr.cancelled_[0].file_id_, id);
     CHECK_EQ(cr.cancelled_[0].orphaned_downloader_.get(), downloader.get());
-    // 会话已作废 对其确认不再有效
+    // 会话已作废，对其确认不再有效
     CHECK(!tm.handle_ack(downloader.get(), sid, 0).valid_);
 }

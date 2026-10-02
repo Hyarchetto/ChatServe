@@ -1,4 +1,4 @@
-// BatchQueue 用例 — 攒批 合并唤醒 排空中追加
+// BatchQueue 用例 — 攒批，合并唤醒，排空中追加
 #include "TestMain.h"
 
 #include <vector>
@@ -18,7 +18,7 @@ TEST(batch_queue_hands_whole_batch_to_callback) {
     queue.push(2);
     queue.push(3);
     queue.drain();
-    // 排空前攒下的三条在同一次交换里取走 回调只被调一次
+    // 排空前攒下的三条在同一次交换里取走，回调只被调一次
     CHECK_EQ(batch_sizes.size(), size_t(1));
     CHECK_EQ(batch_sizes[0], size_t(3));
     CHECK_EQ(seen.size(), size_t(3));
@@ -28,12 +28,12 @@ TEST(batch_queue_hands_whole_batch_to_callback) {
 
 TEST(batch_queue_reports_wake_only_on_empty_to_nonempty) {
     BatchQueue<int> queue([](std::vector<int>&) {});
-    // 空到非空 要唤醒
+    // 空到非空，要唤醒
     CHECK(queue.push(1));
-    // 排空还没跑 唤醒已在途 再推不必再叫一次
+    // 排空还没跑，唤醒已在途，再推不必再叫一次
     CHECK(!queue.push(2));
     queue.drain();
-    // 排空收尾后回到空 下一次又是空到非空
+    // 排空收尾后回到空，下一次又是空到非空
     CHECK(queue.push(3));
 }
 
@@ -45,7 +45,7 @@ TEST(batch_queue_takes_items_pushed_during_drain) {
             seen.push_back(v);
         }
         if (seen.size() == 1) {
-            // 排空在途时追加的 由同一轮接着取走 不另起一轮
+            // 排空在途时追加的，由同一轮接着取走，不另起一轮
             queue->push(2);
         }
     });

@@ -1,4 +1,4 @@
-// HTTP 路由分发 — 匹配路径 → 执行业务逻辑
+// HTTP 路由分发
 #include "http/HttpRouter.h"
 #include "http/StaticFileServer.h"
 #include "http/ErrorResponse.h"
@@ -17,7 +17,7 @@ HttpRouter::HttpRouter() {
         return StaticFileServer::serve(StaticFileServer::resolve("/index.html"));
     });
 
-    // 默认处理器 未匹配路径按静态文件兜底 从 static/ 目录读
+    // 默认处理器，未匹配路径按静态文件兜底，从 static/ 目录读
     // 路径解析交给 StaticFileServer，越出服务目录的一律当不存在
     on_default([](const HttpRequest& req) {
         std::string file_path = StaticFileServer::resolve(req.path_);

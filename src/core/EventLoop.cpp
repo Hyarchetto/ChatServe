@@ -1,5 +1,4 @@
 // 事件循环的实现
-// 把 EventLoop 作为成员变量嵌入Reactor
 #include "core/EventLoop.h"
 
 #include <cerrno>
@@ -10,8 +9,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
-// 构造函数只定下待办队列的出口 真正的句柄由 init 创建
-// 在容器初始化完毕后再调用 init
+// 构造函数只定下待办队列的出口
 EventLoop::EventLoop()
     : functors_([this](std::vector<std::function<void()>>& fns) {
           for (auto& fn : fns) {
@@ -20,7 +18,7 @@ EventLoop::EventLoop()
       }) {}
 
 // 析构函数关闭 epoll 实例
-// 唤醒注册要先撤 那次摘除要碰事件表与 epoll 实例 关掉实例就来不及了
+// 唤醒注册要先撤，那次摘除要碰事件表与 epoll 实例，关掉实例就来不及了
 EventLoop::~EventLoop() {
     this->wake_.detach();
     if (this->epollfd_ >= 0) {
@@ -29,7 +27,7 @@ EventLoop::~EventLoop() {
 }
 
 // 初始化 EventLoop 的两个核心句柄
-// 唤醒 fd 由本类建 建好即交给 FdRegistration 接管 注册不上它会把 fd 一并收掉
+// 唤醒 fd 由本类建，建好即交给 FdRegistration 接管，注册不上它会把 fd 一并收掉
 bool EventLoop::init() {
     this->epollfd_ = epoll_create(1);
     if (this->epollfd_ < 0) {
@@ -73,12 +71,12 @@ void EventLoop::loop() {
             auto write_cb = it->second.write_cb_;
             auto err_cb = it->second.err_cb_;
 
-            // 读优先 干净关闭以 EPOLLIN 呈现 recv 返回 0 即关闭
+            // 读优先，干净关闭以 EPOLLIN 呈现 recv 返回 0 即关闭
             if (flags & EPOLLIN && read_cb) {
                 read_cb();
             }
             // 对端挂断 EPOLLHUP 连接错误 EPOLLERR 都走关闭回调
-            // 读路径已关闭连接时 fd 已摘除 用 event_map_ 判活避免重复清理
+            // 读路径已关闭连接时 fd 已摘除，用 event_map_ 判活避免重复清理
             if (flags & (EPOLLERR | EPOLLHUP) && err_cb && this->event_map_.count(fd)) {
                 err_cb();
             }
@@ -90,7 +88,6 @@ void EventLoop::loop() {
 }
 
 // 设置退出标志并唤醒 epoll_wait
-// 确保 loop 函数能尽快检测到 quit_ 的变化并退出
 void EventLoop::quit() {
     this->quit_ = true;
     this->wakeup();
@@ -137,8 +134,8 @@ bool EventLoop::mod_event(int fd, uint32_t events) {
     return true;
 }
 
-// 入队后写 eventfd 唤醒 epoll_wait 取件 不判线程 本 loop 线程调也只是入队
-// 已有待办在途时入队返回假 那条由正在跑的排空一并取走 不必再写一次 eventfd
+// 入队后写 eventfd 唤醒 epoll_wait 取件，不判线程，本 loop 线程调也只是入队
+// 已有待办在途时入队返回假，那条由正在跑的排空一并取走，不必再写一次 eventfd
 void EventLoop::post(std::function<void()> cb) {
     if (this->functors_.push(std::move(cb))) {
         this->wakeup();
@@ -146,12 +143,12 @@ void EventLoop::post(std::function<void()> cb) {
 }
 
 // 写入 eventfd 来唤醒 epoll_wait
-// init 前或 init 失败时唤醒 fd 未接管 早到的唤醒直接跳过避免 EBADF 噪音
+// init 前或 init 失败时唤醒 fd 未接管，早到的唤醒直接跳过避免 EBADF 噪音
 void EventLoop::wakeup() {
     this->wake_.wakeup();
 }
 
-// 唤醒 fd 可读回调 只由 loop 线程执行 读干计数再排空待办
+// 唤醒 fd 可读回调，只由 loop 线程执行，读干计数再排空待办
 void EventLoop::handle_wakeup() {
     this->wake_.drain();
     this->functors_.drain();

@@ -16,7 +16,7 @@ public:
 
     static std::string build_frame(const std::string& command,
                                    const std::vector<std::string>& params);
-    // 定长参数经变参模板转成 vector 复用同一实现 避免手写多个重载
+    // 定长参数经变参模板转成 vector 复用同一实现，避免手写多个重载
     template <typename... Args>
     static std::string build_frame(const std::string& command, const Args&... params) {
         return build_frame(command, std::vector<std::string>{params...});

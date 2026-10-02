@@ -20,9 +20,9 @@ TEST(timer_fires_every_interval) {
     loop.quit();
     runner.join();
 
-    // 200ms 二十毫秒一拍应在十次上下 下界放宽到负载抖动
+    // 200ms 二十毫秒一拍应在十次上下，下界放宽到负载抖动
     CHECK(ticks.load() >= 3);
-    // 回调漏读 timerfd 会让 epoll 反复就绪 计数飙到几十万 上界同时守住自旋
+    // 回调漏读 timerfd 会让 epoll 反复就绪，计数飙到几十万，上界同时守住自旋
     CHECK(ticks.load() <= 15);
 }
 

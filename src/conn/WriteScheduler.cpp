@@ -8,8 +8,8 @@
 #include <cerrno>
 #include <cstdio>
 
-// 真写出字节才算一次活跃 心跳据此判这条连接是否还在推进
-// 两条发送路径共用 只在确实发出去时刷新 探测帧除外
+// 真写出字节才算一次活跃，心跳据此判这条连接是否还在推进
+// 两条发送路径共用，只在确实发出去时刷新，探测帧除外
 static void stamp_activity(const std::shared_ptr<Connection>& conn, ssize_t sent, bool probe) {
     if (sent > 0 && !probe) {
         conn->last_activity_ = std::chrono::steady_clock::now();
@@ -19,13 +19,13 @@ static void stamp_activity(const std::shared_ptr<Connection>& conn, ssize_t sent
 WriteScheduler::WriteScheduler(EventLoop& loop, DelConnectionFn del_conn)
     : loop_(loop), del_connection_(std::move(del_conn)) {}
 
-// 入队后立即排空 只由本 loop 归属线程调用
+// 入队后立即排空，只由本 loop 归属线程调用
 void WriteScheduler::enqueue(const std::shared_ptr<Connection>& conn, std::string data) {
     this->queue_.emplace(PendingResponse{conn, std::move(data), false});
     this->drain();
 }
 
-// 心跳探测帧 与业务帧同路发出 区别只在写出去了不算出站推进
+// 心跳探测帧与业务帧同路发出，区别只在写出去了不算出站推进
 void WriteScheduler::enqueue_probe(const std::shared_ptr<Connection>& conn, std::string data) {
     this->queue_.emplace(PendingResponse{conn, std::move(data), true});
     this->drain();
@@ -50,7 +50,7 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
         this->del_connection_(conn);
         return;
     }
-    // 这里已看不出攒下来的是哪一路帧 只可能是有积压时的补发 此时出站本就新鲜
+    // 这里已看不出攒下来的是哪一路帧，只可能是有积压时的补发，此时出站本就新鲜
     stamp_activity(conn, sent, false);
     // 完成发送
     if (sent >= static_cast<ssize_t>(buf.size())) {
@@ -59,7 +59,7 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
         if (conn->sess_->alive_) {
             this->loop_.mod_event(fd, EPOLLIN | EPOLLET);
         }
-        // 缓冲发空 请求过冲刷后关闭的在此收
+        // 缓冲发空，请求过冲刷后关闭的在此收
         if (this->closing_.find(conn) != this->closing_.end()) {
             this->del_connection_(conn);
         }
@@ -69,7 +69,7 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
     }
 }
 
-// 数据未完全发送 — 待写数据发完再回调 del_connection 缓冲已空则立即收
+// 数据未完全发送 — 待写数据发完再回调 del_connection，缓冲已空则立即收
 void WriteScheduler::request_close(const std::shared_ptr<Connection>& conn) {
     if (this->pending_bytes(conn) == 0) {
         this->del_connection_(conn);
@@ -87,7 +87,7 @@ bool WriteScheduler::is_closing(const std::shared_ptr<Connection>& conn) const {
     return this->closing_.find(conn) != this->closing_.end();
 }
 
-// 排空待发队列 处理期间新入队的由下一轮收
+// 排空待发队列，处理期间新入队的由下一轮收
 void WriteScheduler::drain() {
     std::queue<PendingResponse> local{};
     std::swap(local, this->queue_);
@@ -102,8 +102,8 @@ void WriteScheduler::drain() {
             continue;
         }
 
-        // 该连接已有未发完数据 先追加保持帧顺序 再立刻尝试发送
-        // 追加前判上限 慢客户端让缓冲一直涨，超限直接断开不再接收新帧
+        // 该连接已有未发完数据，先追加保持帧顺序，再立刻尝试发送
+        // 追加前判上限，慢客户端让缓冲一直涨，超限直接断开不再接收新帧
         if (this->pending_bytes(item.conn_) != 0) {
             if (this->pending_bytes(item.conn_) > kMaxPendingBytes) {
                 this->del_connection_(item.conn_);
@@ -118,12 +118,12 @@ void WriteScheduler::drain() {
         auto [sent, failed] = this->try_send(fd, wire);
 
         if (failed) {
-            // 硬错误直接收 未发段没有重试价值
+            // 硬错误直接收，未发段没有重试价值
             this->del_connection_(item.conn_);
             continue;
         }
         stamp_activity(item.conn_, sent, item.probe_);
-        // 没发完 未发段进待写缓冲 注册写事件
+        // 没发完，未发段进待写缓冲，注册写事件
         if (sent < static_cast<ssize_t>(wire.size())) {
             this->pending_writes_[item.conn_].append(wire.data() + sent, wire.size() - sent);
             // 写事件挂不上等于这条连接再也发不出去，直接收
@@ -135,7 +135,7 @@ void WriteScheduler::drain() {
             this->handle_write(item.conn_);
             continue;
         }
-        // 本批发完且缓冲已空 请求过冲刷后关闭的在此收
+        // 本批发完且缓冲已空，请求过冲刷后关闭的在此收
         if (this->closing_.find(item.conn_) != this->closing_.end() && 
             this->pending_bytes(item.conn_) == 0) {
             this->del_connection_(item.conn_);
@@ -149,7 +149,7 @@ size_t WriteScheduler::pending_bytes(const std::shared_ptr<Connection>& conn) co
     return it == this->pending_writes_.end() ? 0 : it->second.size();
 }
 
-// 发送循环 返回 已发送量 与 是否硬错误 遇 EAGAIN 中断不算硬错误
+// 发送循环，返回已发送量与是否硬错误，遇 EAGAIN 中断不算硬错误
 std::pair<ssize_t, bool> WriteScheduler::try_send(int fd, std::string_view view) {
     ssize_t sent = 0;
     while (sent < static_cast<ssize_t>(view.size())) {

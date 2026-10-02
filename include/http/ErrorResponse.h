@@ -1,5 +1,4 @@
 // 错误页面生成 — 把 HTTP 状态码包装成完整的 HTML 响应
-// 和 StaticFileServer 分开，各管各的
 #pragma once
 
 #include <string>

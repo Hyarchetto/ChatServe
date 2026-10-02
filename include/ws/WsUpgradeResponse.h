@@ -1,5 +1,4 @@
-// WebSocket 握手升级响应构造，RFC 6455
-// 本文件只做一件事：根据 HTTP Upgrade 请求构建 101 Switching Protocols 响应
+// WebSocket 握手升级响应构造 — 根据 HTTP Upgrade 请求构建 101 响应
 #pragma once
 
 #include "../http/HttpRequest.h"

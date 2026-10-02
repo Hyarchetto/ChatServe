@@ -1,12 +1,10 @@
 // WebSocket 帧解析 — RFC 6455
-// 本文件只做一件事：从 TCP buffer 中解析出 WebSocket 帧
 #include <cstring>
 #include <vector>
 
 #include "ws/WsParser.h"
 #include "ws/WsFrame.h"
 
-// 帧大小限制
 static constexpr size_t kMaxFramePayloadLen = 64 * 1024 * 1024;   // 单帧 payload 上限 64MB
 static constexpr size_t kMaxControlPayloadLen = 125;              // RFC 6455 §5.5 控制帧 payload 上限
 

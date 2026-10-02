@@ -13,7 +13,7 @@ TEST(app_parser_splits_command_and_params) {
 }
 
 TEST(app_parser_splits_every_delimiter_into_params) {
-    // 每个 | 都切参数 内容本身含 | 时要从 rest_ 取回
+    // 每个 | 都切参数，内容本身含 | 时要从 rest_ 取回
     AppMessage msg = AppParser::parse("MSG|3|a|b|c");
     CHECK_EQ(msg.param_count(), size_t(4));
     CHECK_EQ(msg.param(0), std::string("3"));
@@ -22,7 +22,7 @@ TEST(app_parser_splits_every_delimiter_into_params) {
 }
 
 TEST(app_parser_leaves_bare_text_as_empty_command) {
-    // 无 | 的裸文本命令字为空 由上层表查找未命中丢弃
+    // 无 | 的裸文本命令字为空，由上层表查找未命中丢弃
     AppMessage msg = AppParser::parse("hello world");
     CHECK(msg.command_.empty());
     CHECK_EQ(msg.param_count(), size_t(0));
@@ -41,13 +41,13 @@ TEST(app_parser_builds_frame_from_params) {
 }
 
 TEST(app_parser_builds_pong_with_trailing_delimiter) {
-    // 心跳应答是 PONG 加一个空参数 组出来的帧自己再解析一遍也是合法命令
+    // 心跳应答是 PONG 加一个空参数，组出来的帧自己再解析一遍也是合法命令
     CHECK_EQ(AppParser::build_frame("PONG", ""), std::string("PONG|"));
 }
 
 TEST(app_parser_ping_and_pong_carry_trailing_delimiter) {
-    // 尾分隔符只负责成帧 不产出参数 两条都靠它才落进命令分支而非裸文本
-    // 中间的空字段才成空参数 见 app_parser_handles_empty_param_between_delimiters
+    // 尾分隔符只负责成帧，不产出参数，两条都靠它才落进命令分支而非裸文本
+    // 中间的空字段才成空参数，见 app_parser_handles_empty_param_between_delimiters
     AppMessage ping = AppParser::parse("PING|");
     CHECK_EQ(ping.command_, std::string("PING"));
     CHECK_EQ(ping.param_count(), size_t(0));

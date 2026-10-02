@@ -1,6 +1,4 @@
-// 跨线程单消费者邮箱 — 自持唤醒 fd
-// 攒批交给 BatchQueue 唤醒写自己的 eventfd 本类不碰消费方的任何内部方法
-// 构造只管队列 装配时 attach 建 fd 并注册 此后 post 只碰自己的锁与 fd
+// 跨线程邮箱 — 自持唤醒 fd
 #pragma once
 
 #include <sys/eventfd.h>
@@ -17,8 +15,8 @@
 template <typename T>
 class Mailbox {
 public:
-    // 回调只被消费线程执行 一次拿到整批 逐条 move 走内容
-    // 返回后队列清空 ready_ 并留着重用 所以回调不得留存它的引用
+    // 回调只被消费线程执行，一次拿到整批，逐条 move 走内容
+    // 返回后队列清空 ready_ 并留着重用，所以回调不得留存它的引用
     using Callback = typename BatchQueue<T>::Callback;
 
     explicit Mailbox(Callback callback) : queue_(std::move(callback)) {}
@@ -54,12 +52,12 @@ public:
     }
 
 private:
-    // 唤醒 fd 可读回调 只由消费线程执行 读干计数再排空
+    // 唤醒 fd 可读回调，只由消费线程执行，读干计数再排空
     void handle_wakeup() {
         this->wake_.drain();
         this->queue_.drain();
     }
 
-    BatchQueue<T> queue_;
+    BatchQueue<T> queue_;       // 攒批交给它，本类只管唤醒自己
     FdRegistration wake_;       // 唤醒 fd 的注册
 };

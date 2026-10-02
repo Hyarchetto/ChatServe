@@ -13,7 +13,7 @@
 // ==================== Room ====================
 
 std::vector<Room::Member> Room::get_connections() {
-    // 读多写少 广播并发读共享锁
+    // 读多写少，广播并发读共享锁
     std::shared_lock<std::shared_mutex> lock(this->mtx_);
     std::vector<Member> members;
     for (auto& e : this->connections_) {
@@ -76,7 +76,7 @@ JoinResult RoomManager::join_room(const std::string& room_id,
     }
     Room& room = *it->second;
     if (!room.add_num(sess, std::move(nick))) {
-        // 现造的房间没人进得去就地回收 不留空房
+        // 现造的房间没人进得去就地回收，不留空房
         if (created) {
             this->rooms_.erase(it);
         }

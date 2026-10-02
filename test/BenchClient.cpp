@@ -1,14 +1,14 @@
 // BenchClient — WebSocket 消息中继吞吐压测
 //
-// 连接分为两类 每类各占一半 两两配对同处一室
-//   发送方 只发 MSG 不收 下行只有一次性的 JOIN 应答 不会积压
-//   接收方 只收不发 始终在读 也不会积压
-// 收发分离是这份压测的关键 若让一条连接既发又收 发送速度一旦超过
-// 服务端的下行速度 该连接就会被服务端的慢客户端保护断开 量到的
-// 只是客户端的收发循环上限 不是服务端的中继能力
+// 连接分为两类，每类各占一半，两两配对同处一室
+//   发送方，只发 MSG 不收，下行只有一次性的 JOIN 应答，不会积压
+//   接收方，只收不发，始终在读，也不会积压
+// 收发分离是这份压测的关键，若让一条连接既发又收，发送速度一旦超过
+// 服务端的下行速度，该连接就会被服务端的慢客户端保护断开，量到的
+// 只是客户端的收发循环上限，不是服务端的中继能力
 //
-// 中继吞吐 = 发送方发出的消息正文总量 / 时长 即服务端接收 解析 分发并
-// 转发出去的业务消息量 接收方收到的字节数用于交叉验证中继完整
+// 中继吞吐 = 发送方发出的消息正文总量 / 时长，即服务端接收、解析、分发并
+// 转发出去的业务消息量，接收方收到的字节数用于交叉验证中继完整
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -37,9 +37,9 @@ constexpr size_t kMsgPrefixLen = 4;
 constexpr size_t kBodyLen = 200;                 // 消息内容长度
 constexpr size_t kMsgLen = kMsgPrefixLen + kBodyLen;
 constexpr size_t kRecvBuf = 256 * 1024;
-constexpr int kIoTimeoutSec = 5;                 // 收发超时 兼作断连探测
-// 掩码固定 载荷恒定 整帧一次算好反复发
-// 服务端解掩码的开销与随机掩码完全相同 随机化只会拖慢客户端
+constexpr int kIoTimeoutSec = 5;                 // 收发超时，兼作断连探测
+// 掩码固定，载荷恒定，整帧一次算好反复发
+// 服务端解掩码的开销与随机掩码完全相同，随机化只会拖慢客户端
 constexpr uint8_t kMaskKey[4] = {0x12, 0x34, 0x56, 0x78};
 
 // 一类连接的结果
@@ -51,7 +51,7 @@ struct SideStat {
     std::atomic<const char*> first_what_{nullptr};
 };
 
-// 设收发超时 对端长时间无动静时让阻塞调用返回 失败返回 false
+// 设收发超时，对端长时间无动静时让阻塞调用返回，失败返回 false
 bool set_timeouts(int fd) {
     timeval tv{};
     tv.tv_sec = kIoTimeoutSec;
@@ -59,7 +59,7 @@ bool set_timeouts(int fd) {
            ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
 }
 
-// 建连并完成 WebSocket 握手 成功返回 fd 失败返回 -1
+// 建连并完成 WebSocket 握手，成功返回 fd 失败返回 -1
 int connect_ws() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -95,7 +95,7 @@ int connect_ws() {
         }
         head.append(buf, static_cast<size_t>(n));
     }
-    // 状态行前缀比对 不能用 compare(0, 首行长度, ...) 长度不等必然失败
+    // 状态行前缀比对，不能用 compare(0, 首行长度, ...) 长度不等必然失败
     if (head.rfind("HTTP/1.1 101", 0) != 0 || !set_timeouts(fd)) {
         ::close(fd);
         return -1;
@@ -130,7 +130,7 @@ std::string build_client_frame(const std::string& payload) {
     return frame;
 }
 
-// 记一次非正常结束 只保留第一条
+// 记一次非正常结束，只保留第一条
 void note_failure(SideStat& stat, const char* what) {
     int expected = 0;
     if (stat.first_errno_.compare_exchange_strong(expected, errno ? errno : -1)) {
@@ -138,9 +138,9 @@ void note_failure(SideStat& stat, const char* what) {
     }
 }
 
-// 发送方 只发不收
-// rate 为 0 时不节流 服务端吸收多快就转多快 会把服务器灌到内存耗尽
-// rate 大于 0 时按目标速率节流 用于测服务端在可持续负载下的中继能力
+// 发送方，只发不收
+// rate 为 0 时不节流，服务端吸收多快就转多快，会把服务器灌到内存耗尽
+// rate 大于 0 时按目标速率节流，用于测服务端在可持续负载下的中继能力
 void sender_loop(int fd, const std::string& frame,
                  std::chrono::steady_clock::time_point deadline, SideStat& stat,
                  int rate) {
@@ -153,7 +153,7 @@ void sender_loop(int fd, const std::string& frame,
             const double elapsed =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
                     .count();
-            // 加一让首条立即发出 之后按配额走
+            // 加一让首条立即发出，之后按配额走
             if (sent >= static_cast<size_t>(elapsed * rate) + 1) {
                 std::this_thread::sleep_for(std::chrono::microseconds(200));
                 continue;
@@ -166,7 +166,7 @@ void sender_loop(int fd, const std::string& frame,
             continue;
         }
         if (n < 0 && errno == EAGAIN) {
-            continue;  // 发送超时 服务端一时跟不上 继续推
+            continue;  // 发送超时，服务端一时跟不上，继续推
         }
         note_failure(stat, n == 0 ? "send 返回 0" : "send 失败");
         clean = false;
@@ -177,7 +177,7 @@ void sender_loop(int fd, const std::string& frame,
     ::close(fd);
 }
 
-// 接收方 只收不发 始终排空 保证服务端下行不积压
+// 接收方，只收不发，始终排空，保证服务端下行不积压
 void receiver_loop(int fd, std::chrono::steady_clock::time_point deadline,
                    SideStat& stat) {
     char buf[kRecvBuf];
@@ -190,7 +190,7 @@ void receiver_loop(int fd, std::chrono::steady_clock::time_point deadline,
             continue;
         }
         if (n < 0 && errno == EAGAIN) {
-            continue;  // 收包超时 对端一时没消息 继续等
+            continue;  // 收包超时，对端一时没消息，继续等
         }
         note_failure(stat, n == 0 ? "对端关闭" : "recv 失败");
         clean = false;
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
         std::printf("发送方不限速 服务端吸收多快就转多快\n\n");
     }
 
-    // 先全部建连并入房 不计入计时
+    // 先全部建连并入房，不计入计时
     std::vector<int> senders;
     std::vector<int> receivers;
     for (int i = 0; i < pairs; ++i) {
@@ -269,9 +269,9 @@ int main(int argc, char** argv) {
 
     const size_t sent = send_stat.bytes_.load();
     const size_t got = recv_stat.bytes_.load();
-    // 发送侧只说明服务端吞下了多少 真正被中继出去的要看接收侧
+    // 发送侧只说明服务端吞下了多少，真正被中继出去的要看接收侧
     const size_t sent_frames = sent / frame.size();
-    // 服务端帧无掩码 头为 1+1+2 字节
+    // 服务端帧无掩码，头为 1+1+2 字节
     const size_t kServerFrame = kMsgLen + 4;
     const size_t relayed_frames = got / kServerFrame;
     const size_t relayed = relayed_frames * kMsgLen;

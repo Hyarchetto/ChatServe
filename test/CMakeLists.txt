@@ -9,6 +9,7 @@ add_executable(chat_tests
     HttpHandlerTest.cpp
     HttpParserTest.cpp
     LazyBufferTest.cpp
+    LockFreeQueueTest.cpp
     TimerTest.cpp
     TransferManagerTest.cpp
     WsParserTest.cpp
@@ -29,3 +30,9 @@ target_compile_options(chat_bench PRIVATE -Wall -Wextra)
 add_executable(chat_transfer_bench BenchTransfer.cpp)
 target_link_libraries(chat_transfer_bench PRIVATE chat_common)
 target_compile_options(chat_transfer_bench PRIVATE -Wall -Wextra)
+
+# 线程池队列对拍 — 不参与 ctest 需绑核手动调用
+# ./build/test/chat_queue_bench [工作线程数] [每批任务数] [总任务数]
+add_executable(chat_queue_bench BenchQueue.cpp)
+target_link_libraries(chat_queue_bench PRIVATE chat_common)
+target_compile_options(chat_queue_bench PRIVATE -Wall -Wextra)

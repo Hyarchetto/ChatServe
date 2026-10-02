@@ -1,11 +1,11 @@
-// Heartbeat — 心跳策略 纯函数 无依赖
+// Heartbeat — 心跳策略，纯函数
 #pragma once
 
 #include <chrono>
 
 struct Heartbeat {
-    static constexpr std::chrono::milliseconds kTickInterval{30 * 1000};  // 扫描节拍 即定时器周期
-    static constexpr std::chrono::milliseconds kPingIdle{30 * 1000};      // 入站静默多久发一条 PING 试探
+    static constexpr std::chrono::milliseconds kTickInterval{30 * 1000};  // 扫描节拍，即定时器周期
+    static constexpr std::chrono::milliseconds kPingIdle{30 * 1000};      // 出入站都静默多久发一条 PING 试探
     static constexpr std::chrono::milliseconds kIdleTimeout{90 * 1000};   // 出入站都静默多久判死
 
     enum class Action {

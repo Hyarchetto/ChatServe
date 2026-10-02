@@ -1,13 +1,13 @@
 // HTTP 请求解析器 — 无状态，每次从头解析完整 buffer
-// 从 TCP buffer 中解析出 HTTP 请求
 #include "http/HttpParser.h"
 
 #include <string_view>
 #include <sstream>
 
-// Connection 头的值是逗号分隔的 token 列表 判断其中是否含指定 token
-// 大小写不敏感 两侧空白与空 token 都跳过
-// want 传小写字面量 与归一化后的 token 直接比 头值不能就地改 Sec-WebSocket-Key 的 base64 就大小写敏感
+// Connection 头的值是逗号分隔的 token 列表，判断其中是否含指定 token
+// 大小写不敏感，两侧空白与空 token 都跳过
+// want 传小写字面量，token 先归一化再比，省得每次都现转
+// 头值不能就地改，Sec-WebSocket-Key 的 base64 就大小写敏感
 static bool has_conn_token(const std::string& value, std::string_view want) {
     size_t start = 0;
     while (start <= value.size()) {
@@ -33,11 +33,11 @@ static bool has_conn_token(const std::string& value, std::string_view want) {
     return false;
 }
 
-// 请求行与请求头的累计上限 防客户端无限发头撑爆读缓冲
-// 取 64KB 常见浏览器头部不足 8KB 留足余量 与 ws 侧的帧上限对称
+// 请求行与请求头的累计上限，防客户端无限发头撑爆读缓冲
+// 取 64KB，常见浏览器头部不足 8KB，留足余量
 static constexpr size_t kMaxHeaderBytes = 64 * 1024;
 
-// 头部超限 直接判定为错误请求
+// 头部超限，直接判定为错误请求
 static HttpResult build_header_too_large() {
     HttpResult result;
     result.type_ = HttpResultType::BAD_REQUEST;
@@ -45,9 +45,9 @@ static HttpResult build_header_too_large() {
     return result;
 }
 
-// 行未终结时缓冲区仍超上限 说明头部在无界增长
-// 只在 read_line 失败时可用 此时缓冲区必然全是尚未终结的头部
-// 若请求本体已到达 头部终结符必然已被读到 不会走到这里
+// 行未终结时缓冲区仍超上限，说明头部在无界增长
+// 只在 read_line 失败时可用，此时缓冲区必然全是尚未终结的头部
+// 若请求本体已到达，头部终结符必然已被读到，不会走到这里
 static bool has_unterminated_overflow(std::string_view buf) {
     return buf.size() > kMaxHeaderBytes;
 }
@@ -66,16 +66,14 @@ HttpResult HttpParser::handle(std::string_view buf) {
             return result;  // INCOMPLETE
         }
         std::istringstream iss(line);
-        // 如果请求头不完整
+        // 请求行三截不全，少方法、少路径或少版本
         if (!(iss >> result.request_.method_ >> result.request_.path_ >> result.request_.version_)) {
-            // 直接返回错误请求对应响应
             result.type_ = HttpResultType::BAD_REQUEST;
             result.error_msg_ = "Invalid request line";
             return result;
         }
-        // 如果请求方式不支持
+        // 只认 GET 与 POST
         if (result.request_.method_ != "GET" && result.request_.method_ != "POST") {
-            // 同样返回错误请求对应响应
             result.type_ = HttpResultType::BAD_REQUEST;
             result.error_msg_ = "Only GET and POST are supported";
             return result;
@@ -85,7 +83,7 @@ HttpResult HttpParser::handle(std::string_view buf) {
     // ==================== 请求头 ====================
     std::string line;
     while (true) {
-        // 行已终结但累计超限 每行都很短也能撑爆
+        // 行已终结但累计超限，每行都很短也能撑爆
         if (pos > kMaxHeaderBytes) {
             return build_header_too_large();
         }
@@ -113,20 +111,18 @@ HttpResult HttpParser::handle(std::string_view buf) {
             result.error_msg_ = "Invalid header";
             return result;
         }
-        // 大小写归一化由头表负责 这里只管裁掉两侧空白
+        // 大小写归一化由头表负责，这里只管裁掉两侧空白
         key.resize(key_end + 1);
 
+        // 头值两侧的 OWS 都要裁掉 RFC 7230 3.2.4 规定服务端必须忽略
+        // 尾部的留着会让按整值比对的头对不上，如 Upgrade 的 websocket
         std::string val = line.substr(colon + 1);
         size_t first = val.find_first_not_of(" \t");
-        if (first == std::string::npos) {
-            val.clear();
-        }
-        else {
-            val.erase(0, first);
-        }
+        size_t last = val.find_last_not_of(" \t");
+        val = (first == std::string::npos) ? std::string{} : val.substr(first, last - first + 1);
 
-        // 重复的 Content-Length 中间层与服务器可能各取一个 直接判错
-        // 其余头名重复是 RFC 7230 允许的 后写的覆盖先写的
+        // 重复的 Content-Length 中间层与服务器可能各取一个，直接判错
+        // 其余头名重复是 RFC 7230 允许的，后写的覆盖先写的
         if (!result.request_.headers_.set(key, val) && lowercase(key) == "content-length") {
             result.type_ = HttpResultType::BAD_REQUEST;
             result.error_msg_ = "Duplicate Content-Length";
@@ -135,7 +131,7 @@ HttpResult HttpParser::handle(std::string_view buf) {
     }
 
     // 服务器不实现 chunked 解码 Transfer-Encoding 与 Content-Length 同时出现时
-    // 中间层与服务器可能各取一个长度 直接判错
+    // 中间层与服务器可能各取一个长度，直接判错
     if (result.request_.headers_.find("Transfer-Encoding") &&
         result.request_.headers_.find("Content-Length")) {
         result.type_ = HttpResultType::BAD_REQUEST;
@@ -146,7 +142,7 @@ HttpResult HttpParser::handle(std::string_view buf) {
     // ==================== 请求体 ====================
     {
         size_t content_length = 0;
-        // 头表查找大小写不敏感 精确匹配会漏掉 content-length 变体 body 不消耗导致请求错位
+        // 头表查找大小写不敏感，精确匹配会漏掉 content-length 变体 body 不消耗导致请求错位
         auto cl = result.request_.headers_.find("Content-Length");
         if (cl) {
             try {
@@ -184,7 +180,7 @@ HttpResult HttpParser::handle(std::string_view buf) {
         else {
             result.type_ = HttpResultType::OK;
         }
-        // 客户端要求关闭连接 回应后由施加侧断开
+        // 客户端要求关闭连接，回应后由施加侧断开
         result.close_ = connection_hdr && has_conn_token(*connection_hdr, "close");
         result.consumed_ = pos;
         return result;

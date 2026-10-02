@@ -8,18 +8,18 @@
 #include "app/AppParser.h"
 #include "ctrl/Session.h"
 
-// 一条 DWREQ 请求帧 目标即该请求的上传方 初始窗口与滑动补发共用
+// 一条 DWREQ 请求帧，目标即该请求的上传方
 static CtrlDown build_dwreq_frame(const NextRequest& req) {
     return {req.uploader_, AppParser::build_frame("DWREQ", std::to_string(req.session_id_),
                                                   req.file_id_, std::to_string(req.offset_),
                                                   std::to_string(req.size_))};
 }
 
-// 处理上传方 BINARY 分块 定位会话并转发给下载方
+// 处理上传方 BINARY 分块，定位会话并转发给下载方
 std::vector<CtrlDown> AppRouter::handle_chunk(std::shared_ptr<Session> sess,
                                               const std::string& data) {
     std::vector<CtrlDown> results;
-    // 未加入房间则房间查不到 房间在栈上持住让传输管理器存活到本函数结束
+    // 未加入房间则房间查不到，房间在栈上持住让传输管理器存活到本函数结束
     auto room = this->room_mgr_.find_room(sess->room_);
     if (!room) {
         return results;
@@ -37,7 +37,7 @@ std::vector<CtrlDown> AppRouter::handle_chunk(std::shared_ptr<Session> sess,
             std::to_string(result.offset_),
             std::to_string(result.size_));
         results.push_back({dl, std::move(dwdata)});
-        // 原样中继分块 复用原始载荷免剥头重拼
+        // 原样中继分块，复用原始载荷免剥头重拼
         CtrlDown bin;
         bin.sess_ = std::move(dl);
         bin.text_ = data;
@@ -73,7 +73,7 @@ void AppRouter::register_transfer() {
             return results;
         }
 
-        // 未加入房间则房间查不到 注册与广播自然空转
+        // 未加入房间则房间查不到，注册与广播自然空转
         auto room = this->room_mgr_.find_room(sess->room_);
         if (!room) {
             return results;
@@ -86,7 +86,7 @@ void AppRouter::register_transfer() {
         // 回复 UPOK 给上传方
         results.push_back({sess, AppParser::build_frame("UPOK", file_id)});
 
-        // 广播 FILE 通知给房间其他人 末尾带上上传方 fd 作为唯一标识
+        // 广播 FILE 通知给房间其他人，末尾带上上传方 fd 作为唯一标识
         std::string notify = AppParser::build_frame("FILE", {file_id, filename, std::to_string(filesize),
                                                     std::to_string(sess->fd_)});
         broadcast_to_room(room, sess.get(), notify, results);
@@ -117,7 +117,7 @@ void AppRouter::register_transfer() {
 
         tm.cancel_file(file_id);
 
-        // 广播文件失效，房间内所有下载方卡片显示已失效，与退出房间一致
+        // 广播文件失效给房间内其他人
         std::string dwerr = build_dwerr_frame(file_id, "上传已取消");
         broadcast_to_room(room, sess.get(), dwerr, results);
 
@@ -145,7 +145,7 @@ void AppRouter::register_transfer() {
             results.push_back({sess, AppParser::build_frame("SYS", "ERR|文件不存在")});
             return results;
         }
-        // 上传方已离线 文件实际不可下载 不建传输会话
+        // 上传方已离线，文件实际不可下载，不建传输会话
         if (!reg->uploader_ || !reg->uploader_->alive_) {
             results.push_back({sess, build_dwerr_frame(reg->file_id_, kUploaderGone)});
             return results;
@@ -175,7 +175,7 @@ void AppRouter::register_transfer() {
         results.push_back({sess, AppParser::build_frame("DWSTART", reg->file_id_, reg->filename_,
                                                         std::to_string(reg->filesize_))});
 
-        // 上传方在传输启动到发请求之间可能掉线 存活则发 DWREQ 否则告知下载方
+        // 上传方在传输启动到发请求之间可能掉线，存活则发 DWREQ 否则告知下载方
         if (reg->uploader_->alive_) {
             for (auto& req : start.requests_) {
                 results.push_back(build_dwreq_frame(req));

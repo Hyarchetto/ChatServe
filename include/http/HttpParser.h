@@ -1,5 +1,4 @@
-// HTTP 请求解析器 — 每次从头解析，不做增量状态追踪
-// 本文件只做一件事：从 TCP buffer 中解析出 HTTP 请求
+// HTTP 请求解析器 — 每次从头解析 TCP 缓冲区
 #pragma once
 
 #include <string>

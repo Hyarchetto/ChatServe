@@ -10,7 +10,7 @@ struct HttpResponse {
     int status_ = 200;
     std::string status_text_ = "OK";
     std::string version_ = "HTTP/1.1";
-    HeaderMap headers_;                              // 头名大小写不敏感 键以归一化形态存储
+    HeaderMap headers_;                              // 头名大小写不敏感，键以归一化形态存储
     std::string body_;
 
     // 标准序列化：状态行 + 头部 + 空行 + body

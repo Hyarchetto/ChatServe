@@ -1,4 +1,4 @@
-// WsParser 用例 — 帧解析 分片累积 各类协议错误
+// WsParser 用例 — 帧解析，分片累积，各类协议错误
 #include "TestMain.h"
 
 #include <cstdint>
@@ -10,7 +10,7 @@
 #include "ws/WsOpcode.h"
 #include "ws/WsParser.h"
 
-// 造一个客户端到服务器的掩码帧 解析器只收客户端帧
+// 造一个客户端到服务器的掩码帧，解析器只收客户端帧
 static std::string client_frame(WsOpcode opcode, std::string_view payload, bool fin = true) {
     static const uint8_t kMask[4] = {0x11, 0x22, 0x33, 0x44};
     std::string f;
@@ -60,7 +60,7 @@ TEST(ws_parser_unmasks_binary_payload) {
 }
 
 TEST(ws_parser_leaves_partial_frame_unconsumed) {
-    // 头部齐了但 payload 没到齐 一个字节都不消耗
+    // 头部齐了但 payload 没到齐，一个字节都不消耗
     WsFragmentState frag;
     std::string wire = client_frame(WsOpcode::TEXT, "hello");
     WsResult r = WsParser::handle(wire.substr(0, wire.size() - 2), &frag);
@@ -131,7 +131,7 @@ TEST(ws_parser_closes_when_data_frame_interrupts_fragments) {
 }
 
 TEST(ws_parser_closes_on_oversize_fragmented_message) {
-    // 单帧上限挡不住多帧累积 整条消息另有总量上限
+    // 单帧上限挡不住多帧累积，整条消息另有总量上限
     WsFragmentState frag;
     std::string big(WsFragmentState::kMaxMessageBytes, 'a');
     std::string wire = client_frame(WsOpcode::TEXT, big, false) +

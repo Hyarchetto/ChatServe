@@ -1,4 +1,4 @@
-// HTTP 路由分发 — 匹配路径 → 执行业务逻辑
+// HTTP 路由分发 — 按路径找到处理器并调用
 #pragma once
 
 #include <string>

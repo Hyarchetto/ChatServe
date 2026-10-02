@@ -29,7 +29,7 @@ AppMessage AppParser::parse(const std::string& data) {
 
 std::string AppParser::build_frame(const std::string& command,
                                    const std::vector<std::string>& params) {
-    // 帧长一次算清 省掉逐段 += 的几次重分配
+    // 帧长一次算清，省掉逐段 += 的几次重分配
     size_t total = command.size();
     for (const auto& p : params) {
         total += 1 + p.size();

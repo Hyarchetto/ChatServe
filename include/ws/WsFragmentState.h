@@ -1,6 +1,6 @@
 // WebSocket 分片累积状态 — RFC 6455
-// 一条消息跨多个帧时 已 consume 但尚未成形的载荷寄存在这里
-// 由每连接的持有者保管并传给 WsParser 解析器本身无状态
+// 一条消息跨多个帧时，已 consume 但尚未成形的载荷寄存在这里
+// 由每连接的持有者保管并传给 WsParser
 #pragma once
 
 #include <string>

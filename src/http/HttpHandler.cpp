@@ -1,4 +1,4 @@
-// HttpHandler — HTTP 协议决策器 纯函数实现
+// HttpHandler — HTTP 协议决策器，纯函数实现
 #include "http/HttpHandler.h"
 
 #include <string_view>
@@ -12,7 +12,7 @@
 HttpAction HttpHandler::handle(std::string_view buf) {
     HttpAction action;
     while (true) {
-        // 从已消耗位置续解析 支持同段到达的多个请求
+        // 从已消耗位置续解析，支持同段到达的多个请求
         HttpResult result = HttpParser::handle(buf.substr(action.consumed_));
         action.consumed_ += result.consumed_;
 
@@ -21,22 +21,22 @@ HttpAction HttpHandler::handle(std::string_view buf) {
             case HttpResultType::INCOMPLETE: {
                 return action;
             }
-            // 错误的 HTTP 请求可能是网络问题或者网络攻击 直接断开好了
+            // 错误的 HTTP 请求可能是网络问题或者网络攻击，直接断开好了
             case HttpResultType::BAD_REQUEST: {
                 action.responses_.push_back( ErrorResponse::build_bad_request(result.error_msg_).serialize());
                 action.close_ = true;
                 return action;
             }
-            // 检出 WebSocket 升级请求 101 响应构造与模式切换交给施加侧
+            // 检出 WebSocket 升级请求
             case HttpResultType::WS_UPGRADE: {
                 action.upgrade_ = true;
                 action.upgrade_request_ = std::move(result.request_);
                 return action;
             }
-            // 普通的 HTTP 请求 内联路由
+            // 普通的 HTTP 请求，内联路由
             case HttpResultType::OK: {
                 action.responses_.push_back( this->http_router_.handle(result.request_).serialize());
-                // 客户端要求关闭则回完这一条就断 后续请求不再处理
+                // 客户端要求关闭则回完这一条就断，后续请求不再处理
                 if (result.close_) {
                     action.close_ = true;
                     return action;
