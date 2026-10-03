@@ -1,6 +1,7 @@
 # 单元测试 — 手写极简断言 零第三方依赖
 add_executable(chat_tests
     TestMain.cpp
+    AppHandlerTest.cpp
     AppParserTest.cpp
     AppRouterTest.cpp
     BatchQueueTest.cpp

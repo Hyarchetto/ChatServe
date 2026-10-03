@@ -1,19 +1,17 @@
-// CtrlDispatcher — 中控实现，分层单向解耦，业务委托 AppRouter+RoomManager
+// CtrlDispatcher — 中控实现，分层单向解耦，业务委托 AppHandler
 #include "server/CtrlDispatcher.h"
 
-#include <iostream>
 #include <stdexcept>
 #include <utility>
 
-#include "app/AppParser.h"
-#include "app/AppMessage.h"
-
-CtrlDispatcher::CtrlDispatcher(ThreadPool& works) : works_(works), app_router_(room_mgr_) {
+CtrlDispatcher::CtrlDispatcher(AppHandler& app) : app_handler_(app) {
     // 两个邮箱的回调构造即绑定，唤醒 fd 留到 start 里注册
     this->uplink_box_ = std::make_unique<UplinkBox>(
         [this](std::vector<CtrlUp>& ups) { this->handle_uplink(ups); });
     this->result_box_ = std::make_unique<ResultBox>(
         [this](std::vector<CtrlResult>& results) { this->handle_result(results); });
+    // 邮箱已建、回调已绑，此时把引用交给业务处理段，早于 start
+    this->app_handler_.attach_result_box(*this->result_box_);
 }
 
 CtrlDispatcher::~CtrlDispatcher() {
@@ -61,16 +59,16 @@ void CtrlDispatcher::request_stop() {
 // 一轮拿到整批，本轮要投池的命令先攒在 cmds 里，循环走完一次投进去
 // 逐条 post 的话每一条都要抢一次池的队列锁唤醒一次 worker 批量越大亏得越多
 void CtrlDispatcher::handle_uplink(std::vector<CtrlUp>& ups) {
-    std::vector<Cmd> cmds;
+    std::vector<CtrlCmd> cmds;
     cmds.reserve(ups.size());
     for (auto& up : ups) {
         switch (up.kind_) {
             case CtrlUpKind::WS_TEXT:
             case CtrlUpKind::WS_BINARY: {
-                Cmd cmd;
+                CtrlCmd cmd;
                 cmd.sess_ = std::move(up.sess_);
                 cmd.kind_ = up.kind_;
-                cmd.data_ = std::move(up.text_);
+                cmd.text_ = std::move(up.text_);
                 this->enqueue_cmd(std::move(cmd), cmds);
                 break;
             }
@@ -85,7 +83,7 @@ void CtrlDispatcher::handle_uplink(std::vector<CtrlUp>& ups) {
 
 // 连接关闭，队列里那些命令对已死的连接没有意义，整批丢掉
 // 有在途业务就只登记，等它跑完由 advance_lane 接着收尾，没有则当场收尾
-void CtrlDispatcher::handle_close(std::shared_ptr<Session> sess, std::vector<Cmd>& cmds) {
+void CtrlDispatcher::handle_close(std::shared_ptr<Session> sess, std::vector<CtrlCmd>& cmds) {
     Session* key = sess.get();
     auto [it, inserted] = this->lanes_.try_emplace(key);
     it->second.closing_ = true;
@@ -99,25 +97,25 @@ void CtrlDispatcher::handle_close(std::shared_ptr<Session> sess, std::vector<Cmd
 
 // ==================== 单飞门，只在中控线程 ====================
 // 该 Session 已有操作在途则入队，否则当即开跑并攒进 cmds 待本轮一次投池
-void CtrlDispatcher::enqueue_cmd(Cmd cmd, std::vector<Cmd>& cmds) {
+void CtrlDispatcher::enqueue_cmd(CtrlCmd cmd, std::vector<CtrlCmd>& cmds) {
     Session* key = cmd.sess_.get();
     auto [it, inserted] = this->lanes_.try_emplace(key);
     if (!inserted) {
         it->second.pending_.push_back(std::move(cmd));
         return;
     }
-    it->second.sess_ = cmd.sess_;    // 车道持有会话，拷贝在前 Cmd 那份随后移走
+    it->second.sess_ = cmd.sess_;    // 车道持有会话，拷贝在前 CtrlCmd 那份随后移走
     cmds.push_back(std::move(cmd));  // 新车道，这条命令当即开跑
 }
 
 // 一条操作结束时推进一步，收尾优先于排队，两者都没有则撤销登记
 // 有在途操作就有车道，键必在表中
-void CtrlDispatcher::advance_lane(Session* key, std::vector<Cmd>& cmds) {
+void CtrlDispatcher::advance_lane(Session* key, std::vector<CtrlCmd>& cmds) {
     auto it = this->lanes_.find(key);
     Lane& lane = it->second;
     if (lane.closing_) {
         lane.closing_ = false;  // 排定即清，不清收尾会反复排
-        cmds.push_back(Cmd{lane.sess_, CtrlUpKind::CLOSED, {}});
+        cmds.push_back(CtrlCmd{lane.sess_, CtrlUpKind::CLOSED, {}});
         return;
     }
     // 如果 pending_ 为空，说明代办业务已完全处理
@@ -130,39 +128,22 @@ void CtrlDispatcher::advance_lane(Session* key, std::vector<Cmd>& cmds) {
     lane.pending_.pop_front();
 }
 
-// 一次把攒下的命令推进池，调用方须已在 lanes_ 中为这些 Session 占好位
-void CtrlDispatcher::submit_cmds(std::vector<Cmd> cmds) {
+// 一次把攒下的命令交给业务处理段投池，调用方须已在 lanes_ 中为这些 Session 占好位
+void CtrlDispatcher::submit_cmds(std::vector<CtrlCmd> cmds) {
     if (cmds.empty()) {
         return;
     }
-    // key 先取，提交失败时 cmds 已被移入，取不到
-    std::vector<Session*> keys;
-    std::vector<std::function<void()>> tasks;
-    keys.reserve(cmds.size());
-    tasks.reserve(cmds.size());
-    for (auto& cmd : cmds) {
-        keys.push_back(cmd.sess_.get());
-        tasks.push_back([this, cmd = std::move(cmd)]() mutable {
-            this->run_business(std::move(cmd));
-        });
-    }
-    try {
-        this->works_.post_batch(std::move(tasks));
-    }
-    catch (const std::exception& e) {
-        std::cerr << "中控提交业务失败 " << e.what() << std::endl;
-        // 这批会话的通道废了，车道一并撤掉，不留没人推进的队列
-        for (Session* key : keys) {
-            this->lanes_.erase(key);
-        }
+    // 投池失败的会话通道作废，车道一并撤掉
+    for (Session* key : this->app_handler_.handle(std::move(cmds))) {
+        this->lanes_.erase(key);
     }
 }
 
 // 回程邮箱回调只在中控线程执行，一轮拿到整批响应
-// 整批的帧合成一串一次分拣一次投放，整批的推进结果一次投池
+// 整批的帧合成一串一次分拣一次投放，整批的推进结果一次交给业务处理段
 void CtrlDispatcher::handle_result(std::vector<CtrlResult>& results) {
     std::vector<CtrlDown> frames;
-    std::vector<Cmd> cmds;
+    std::vector<CtrlCmd> cmds;
     for (auto& r : results) {
         for (auto& f : r.frames_) {
             frames.push_back(std::move(f));
@@ -171,51 +152,6 @@ void CtrlDispatcher::handle_result(std::vector<CtrlResult>& results) {
     }
     this->dispatch(std::move(frames));
     this->submit_cmds(std::move(cmds));
-}
-
-// 业务池线程入口，只按 Session 算响应
-void CtrlDispatcher::run_business(Cmd cmd) {
-    std::shared_ptr<Session> sess = std::move(cmd.sess_);
-    std::vector<CtrlDown> frames;
-    try {
-        switch (cmd.kind_) {
-            case CtrlUpKind::WS_TEXT:
-                frames = this->route(sess, cmd.data_);
-                break;
-            case CtrlUpKind::WS_BINARY:
-                frames = this->route_chunk(sess, cmd.data_);
-                break;
-            case CtrlUpKind::CLOSED:
-                frames = this->app_router_.cleanup(sess);
-                break;
-        }
-    }
-    catch (const std::exception& e) {
-        std::cerr << "业务处理异常 fd=" << sess->fd_ << " " << e.what() << std::endl;
-    }
-    // 交还中控线程，中控按轮攒批分拣，携带 Session 保活
-    this->result_box_->post(CtrlResult{std::move(sess), std::move(frames)});
-}
-
-// 路由一条文本命令，委托 AppRouter 执行业务
-std::vector<CtrlDown> CtrlDispatcher::route(std::shared_ptr<Session> sess,
-                                            const std::string& text) {
-    std::vector<CtrlDown> frames;
-    if (!sess->alive_) {
-        return frames;  // io 已关，弃处理，收尾另有 CLOSED 一条
-    }
-    AppMessage msg = AppParser::parse(text);
-    return this->app_router_.handle(std::move(sess), msg);
-}
-
-// 处理一个二进制分块，委托 AppRouter 转发给下载方
-std::vector<CtrlDown> CtrlDispatcher::route_chunk(std::shared_ptr<Session> sess,
-                                                  const std::string& data) {
-    std::vector<CtrlDown> frames;
-    if (!sess->alive_) {
-        return frames;  // io 已关，弃处理，收尾另有 CLOSED 一条
-    }
-    return this->app_router_.handle_chunk(std::move(sess), data);
 }
 
 // ==================== 唯一分发点，只在中控线程 ====================

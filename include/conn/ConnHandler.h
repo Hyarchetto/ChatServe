@@ -41,7 +41,7 @@ public:
     
     // 心跳节拍，取当前时刻扫一遍全部连接，必须在 io 线程调用
     void on_tick();
-    // 按注入的时刻扫描，静默满 kPingIdle 的发 PING，满 kIdleTimeout 的判死
+    // 按注入的时刻扫描，静默满 kIdleTimeout 的判死
     // 时刻由调用方给，测试据此确定性地驱动各分支
     void on_tick(std::chrono::steady_clock::time_point now);
 

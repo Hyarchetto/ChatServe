@@ -6,6 +6,7 @@ import { useFileTransfer } from './useFileTransfer'
 // 应用层心跳 起搏间隔与判死阈值 与服务端 Heartbeat 的三个常数同源
 const kHeartbeatInterval = 30 * 1000
 const kSilenceLimit = 90 * 1000
+const kProbeGrace = 30 * 1000   // 静默超限后留给探针回包的时长 过了才判死
 const kPingFrame = 'PING|'   // 服务端回 PONG| 客户端不必识别 任何帧都算活着
 
 export function useChat() {
@@ -21,6 +22,7 @@ export function useChat() {
   let reconnectTimer = null
   let heartbeatTimer = null
   let lastRecvAt = 0
+  let probedAt = 0
   let isLeaving = false
   let isReconnect = false
   let myRoom = ''
@@ -81,6 +83,7 @@ export function useChat() {
       // 时间戳必须重置 否则长断线后第一拍就拿上一轮留下的过期时间戳把新连接判死
       if (heartbeatTimer) clearInterval(heartbeatTimer)
       lastRecvAt = performance.now()
+      probedAt = 0
       heartbeatTimer = setInterval(heartbeatTick, kHeartbeatInterval)
     }
 
@@ -120,16 +123,24 @@ export function useChat() {
   function heartbeatTick() {
     // 只在连接态起搏 重连间隙与 CONNECTING 期都由此兜掉 不会二次判死
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    // 页面不可见时定时器可能被浏览器冻结 解冻后这个时间戳必然过期 不拿它判死
-    if (!document.hidden && performance.now() - lastRecvAt >= kSilenceLimit) {
-      // 假死 socket 不会触发 onclose 收尾得自己叫
-      const dead = ws
-      ws = null             // 先摘引用 本拍与后续各拍都以它为界
-      dead.onclose = null   // 摘干净 免得 close 之后又回来走一遍收尾
-      dead.onmessage = null // 同理 免得半路回来往死连接上灌一帧
-      dead.close()
-      handleDisconnect('连接无响应，正在重连...')
-      return
+    const now = performance.now()
+    // 静默超限先探一次不直接裁 页面被冻结时定时器与 onmessage 一起停
+    // 解冻后这个时间戳必然过期 拿它判死会误伤活连接 等探针回音才作数
+    if (!document.hidden && now - lastRecvAt >= kSilenceLimit) {
+      if (probedAt === 0) {
+        probedAt = now
+      } else if (now - probedAt >= kProbeGrace) {
+        // 探针满一个宽限仍无回音 假死 socket 不触发 onclose 收尾得自己叫
+        const dead = ws
+        ws = null             // 先摘引用 本拍与后续各拍都以它为界
+        dead.onclose = null   // 摘干净 免得 close 之后又回来走一遍收尾
+        dead.onmessage = null // 同理 免得半路回来往死连接上灌一帧
+        dead.close()
+        handleDisconnect('连接无响应，正在重连...')
+        return
+      }
+    } else {
+      probedAt = 0
     }
     sendCommand(kPingFrame)
   }

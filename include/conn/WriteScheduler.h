@@ -1,4 +1,4 @@
-// 写引擎 — 管理本 loop 连接的响应发送队列和部分发送
+// 写引擎 — 管理本 loop 连接的响应发送与部分发送
 // 遇到 EAGAIN 时注册 EPOLLOUT 等可写再发
 // 遇到 EPIPE 时回调 del_connection 销毁连接
 // 冲刷后关闭归本引擎自持
@@ -6,7 +6,6 @@
 // 每子 loop 一个，主 loop 无连接不建
 #pragma once
 
-#include <queue>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -33,29 +32,16 @@ public:
     // 本写引擎所在事件循环，归属线程判定与跨线程投递目标
     EventLoop& loop() { return this->loop_; }
 
-    // 把一帧响应入本 loop 待发队列并立即排空，只能在本 loop 线程调用
+    // 把一帧响应发给连接，只能在本 loop 线程调用
     void enqueue(const std::shared_ptr<Connection>& conn, std::string data);
-    // 心跳探测帧也走这条发送，但不计入出站推进
-    // 否则空闲连接每轮探测都在刷新自己的存活证据，永远判不死
-    void enqueue_probe(const std::shared_ptr<Connection>& conn, std::string data);
     // 写事件回调
     void handle_write(const std::shared_ptr<Connection>& conn);
     // 数据未完全发送 — 待写数据发完再回调 del_connection，缓冲已空则立即收
     void request_close(const std::shared_ptr<Connection>& conn);
     // 移除指定连接的未完成写入，连接销毁时调用
     void remove_pending(const std::shared_ptr<Connection>& conn);
-    // 该连接是否已表达关闭意图，缓冲发完即回收，心跳据此不再往它上面入队新帧
-    bool is_closing(const std::shared_ptr<Connection>& conn) const;
 
 private:
-    // 本地待响应的结构体，发送目标与发送内容
-    struct PendingResponse {
-        std::shared_ptr<Connection> conn_;
-        std::string data_;
-        bool probe_ = false;        // 心跳探测帧，写出不算一次出站活动
-    };
-    // 排空待发队列，处理期间新入队的由下一轮收
-    void drain();
     // 该连接待写缓冲的字节数，无缓冲为 0
     size_t pending_bytes(const std::shared_ptr<Connection>& conn) const;
     // 发送循环
@@ -64,7 +50,6 @@ private:
     EventLoop& loop_;
     DelConnectionFn del_connection_;
 
-    std::queue<PendingResponse> queue_;
     std::unordered_map<std::shared_ptr<Connection>, LazyBuffer> pending_writes_;
     // 已请求冲刷后关闭的连接，缓冲发空即回调
     std::unordered_set<std::shared_ptr<Connection>> closing_;

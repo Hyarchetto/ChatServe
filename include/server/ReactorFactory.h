@@ -1,7 +1,7 @@
 // ReactorFactory — Reactor 形态与服务器工厂
 // 工厂生成什么返回什么，统一返回具体类型 Reactor/Gateway，不向上抽象
-// 公共资源：业务线程池 ThreadPool 与中控 CtrlDispatcher 归工厂持有，生命周期归工厂
-// 命令经中控 submit 进业务线程池执行
+// 公共资源：业务线程池 ThreadPool、业务处理段 AppHandler、中控 CtrlDispatcher 三者归工厂持有
+// 命令经中控交给 AppHandler 投进业务线程池执行
 // 可选组件 Acceptor/ConnHandler 由 Reactor 内部创建，工厂按形态调用 create 触发
 // 单 Reactor 完整可用，主从工作者网关由 create_gateway 产组件并组装
 #pragma once
@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <memory>
 
+#include "../app/AppHandler.h"
 #include "../core/ThreadPool.h"
 #include "CtrlDispatcher.h"
 #include "Gateway.h"
@@ -16,7 +17,7 @@
 
 class ReactorFactory {
 public:
-    // 构造即建业务线程池与中控，中控线程在装配完成后启动
+    // 构造即建业务线程池、业务处理段与中控，中控线程在装配完成后启动
     ReactorFactory();
     // 停中控与业务线程池，供单独部署的调用方收尾
     ~ReactorFactory();
@@ -41,6 +42,7 @@ private:
     void start_dispatcher();
 
     std::unique_ptr<ThreadPool> works_;              // 业务线程池，公共资源，归工厂
+    std::unique_ptr<AppHandler> app_handler_;        // 业务处理段，握有池引用，归工厂
     std::unique_ptr<CtrlDispatcher> dispatcher_;     // 中控，公共资源，归工厂
     size_t next_io_ = 0;                             // 已分配的 io 序号
 };

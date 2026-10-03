@@ -54,7 +54,7 @@ TEST(conn_handler_closes_connection_idle_in_both_directions) {
     close(sv[1]);
 }
 
-TEST(conn_handler_pings_idle_websocket) {
+TEST(conn_handler_stays_silent_on_idle_websocket) {
     Fixture f;
     int sv[2];
     make_pair(sv);
@@ -62,7 +62,7 @@ TEST(conn_handler_pings_idle_websocket) {
 
     std::thread runner([&f]() { f.loop_.loop(); });
 
-    // 走完握手连接才进入 ws 形态，未升级的连接不发 PING
+    // 走完握手连接才进入 ws 形态
     const std::string req =
         "GET /chat HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
@@ -80,23 +80,20 @@ TEST(conn_handler_pings_idle_websocket) {
     CHECK(resp.find("101") != std::string::npos);
 
     // 注入未来的时刻驱动节拍，经 post 仍在 io 线程执行
-    // 取六十秒，入站静默过一个节拍该发 PING 出站还在硬超时之内不该判死
+    // 取六十秒未到硬超时，连接不该被判死，服务端也不该主动发任何帧
     f.loop_.post([&f]() {
         f.handler_.on_tick(std::chrono::steady_clock::now() + std::chrono::seconds(60));
     });
 
-    // 一条空的 PING 帧，服务端出帧不带掩码，载荷长度为 0
-    unsigned char ping[8] = {0};
-    ssize_t n = recv(sv[1], ping, sizeof(ping), 0);
-    CHECK_EQ(n, ssize_t(2));
-    CHECK_EQ(ping[0], static_cast<unsigned char>(0x89));
-    CHECK_EQ(ping[1], static_cast<unsigned char>(0x00));
+    // 收超时两秒，一个字节都收不到
+    unsigned char buf[8] = {0};
+    CHECK(recv(sv[1], buf, sizeof(buf), 0) < 0);
 
-    // 探测帧自己写出去了不算出站推进，否则连接每轮都被自己续命，两个方向都静默也判不死
+    // 越过硬超时，静默的连接在此收掉
     f.loop_.post([&f]() {
         f.handler_.on_tick(std::chrono::steady_clock::now() + std::chrono::seconds(100));
     });
-    CHECK_EQ(recv(sv[1], ping, sizeof(ping), 0), ssize_t(0));  // 对端已关闭
+    CHECK_EQ(recv(sv[1], buf, sizeof(buf), 0), ssize_t(0));  // 对端已关闭
 
     f.loop_.quit();
     runner.join();

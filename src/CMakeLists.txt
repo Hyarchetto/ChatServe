@@ -10,6 +10,7 @@ add_library(chat_common STATIC
     chatroom/TransferManager.cpp
 
     app/AppChatCommands.cpp
+    app/AppHandler.cpp
     app/AppHeartbeatCommands.cpp
     app/AppParser.cpp
     app/AppRouter.cpp

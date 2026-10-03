@@ -18,14 +18,15 @@
 #include "ws/WsOpcode.h"
 #include "ws/WsUpgradeResponse.h"
 
-ConnHandler::ConnHandler(EventLoop& loop, int io_index,
-                         Mailbox<CtrlUp>& ctrl_uplink_box)
+ConnHandler::ConnHandler(EventLoop& loop, int io_index, Mailbox<CtrlUp>& ctrl_uplink_box)
     : loop_(loop)
     , io_(io_index)
     , writer_(loop, [this](const std::shared_ptr<Connection>& c) {
           this->close_connection(c);
       })
-    , heartbeat_(Heartbeat::kTickInterval, [this]() { this->on_tick(); })
+    , heartbeat_(Heartbeat::kTickInterval, [this]() { 
+        this->on_tick(); }
+    )
     , downlink_box_([this](std::vector<CtrlDown>& ds) {
           this->downlink_batch(ds);
       })
@@ -84,7 +85,7 @@ void ConnHandler::on_tick() {
     this->on_tick(std::chrono::steady_clock::now());
 }
 
-// 扫描全部连接，全静默过一个节拍的发 PING 过三个节拍的判死
+// 扫描全部连接，静默满 kIdleTimeout 的判死
 // 先整表快照再动作，入队与关闭都会改 conns_ 边遍历边动迭代器就失效了
 void ConnHandler::on_tick(std::chrono::steady_clock::time_point now) {
     std::vector<std::shared_ptr<Connection>> snapshot;
@@ -98,20 +99,10 @@ void ConnHandler::on_tick(std::chrono::steady_clock::time_point now) {
     for (auto& conn : snapshot) {
         const auto idle = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - conn->last_activity_);
-        switch (Heartbeat::judge(idle, conn->ws_mode_)) {
-            case Heartbeat::Action::PING:
-                // 已表达关闭意图的连接不再入队
-                if (!this->writer_.is_closing(conn)) {
-                    this->writer_.enqueue_probe(conn, WsFrame::build(WsOpcode::PING, ""));
-                }
-                break;
-            case Heartbeat::Action::CLOSE:
-                oldest = std::max(oldest, idle);
-                this->close_connection(conn);
-                ++closed;
-                break;
-            case Heartbeat::Action::NONE:
-                break;
+        if (Heartbeat::is_expired(idle)) {
+            oldest = std::max(oldest, idle);
+            this->close_connection(conn);
+            ++closed;
         }
     }
     // 汇总一行，一个节拍里可能收掉上千条，逐条打会和其他线程的输出交错
@@ -129,7 +120,7 @@ bool ConnHandler::pump_read(const std::shared_ptr<Connection>& conn) {
     while (true) {
         ssize_t n = recv(client_fd, temp_buffer, sizeof(temp_buffer), 0);
         if (n > 0) {
-            // 收到任何字节都算一次活跃，不区分是业务帧还是对 PING 的回包
+            // 收到任何字节都算一次活跃，客户端的应用层起搏是主要刷新来源
             conn->last_activity_ = std::chrono::steady_clock::now();
             conn->read_buf_.append(temp_buffer, static_cast<size_t>(n));
             continue;

@@ -1,4 +1,4 @@
-// io↔中控，消息 — 以共享 Session 控制块为连接身份
+// 跨线程消息 — io↔中控与中控↔业务池，以共享 Session 控制块为连接身份
 // Session 以 shared_ptr 跨线程携带，引用计数保活，身份即对象，无 fd 复用之虞
 // 业务池只摸 Session，读缓冲与分片状态留在 io
 // 两个方向的载荷类型各成枚举，都止于应用层
@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Session.h"
 
@@ -36,4 +37,19 @@ struct CtrlDown {
     std::shared_ptr<Session> sess_;
     std::string text_;
     CtrlDownKind kind_ = CtrlDownKind::WS_TEXT;
+};
+
+// 中控→业务池，一条待处理命令，携带会话保活
+// kind_ 直接复用上行事件类型，投池路上不再重新编码
+// CLOSED 在此表示连接关闭后的业务收尾，它只可能由那条 CLOSED 事件产生
+struct CtrlCmd {
+    std::shared_ptr<Session> sess_;
+    CtrlUpKind kind_ = CtrlUpKind::WS_TEXT;
+    std::string text_;      // 应用原文或分块原始字节，收尾时为空
+};
+
+// 池→中控，一条算完的业务响应，携带会话保活
+struct CtrlResult {
+    std::shared_ptr<Session> sess_;
+    std::vector<CtrlDown> frames_;
 };

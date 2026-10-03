@@ -2,17 +2,20 @@
 #include "server/ReactorFactory.h"
 #include "server/Reactor.h"
 #include "server/CtrlDispatcher.h"
+#include "app/AppHandler.h"
 #include "core/ThreadPool.h"
 
 #include <vector>
 
 ReactorFactory::ReactorFactory() {
-    // 业务线程池与中控为公共资源，归工厂持有，线程池随工厂生成即拉起
+    // 三者均为公共资源，归工厂持有，线程池随工厂生成即拉起
     this->works_ = std::make_unique<ThreadPool>();
-    this->dispatcher_ = std::make_unique<CtrlDispatcher>(*this->works_);
+    this->app_handler_ = std::make_unique<AppHandler>(*this->works_);
+    this->dispatcher_ = std::make_unique<CtrlDispatcher>(*this->app_handler_);
 }
 
 ReactorFactory::~ReactorFactory() {
+    // 承重墙：成员析构前先 join 中控与全部池线程，在途任务闭包已跑完
     this->shutdown();
 }
 

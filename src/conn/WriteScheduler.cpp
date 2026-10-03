@@ -8,10 +8,10 @@
 #include <cerrno>
 #include <cstdio>
 
-// 真写出字节才算一次活跃，心跳据此判这条连接是否还在推进
-// 两条发送路径共用，只在确实发出去时刷新，探测帧除外
-static void stamp_activity(const std::shared_ptr<Connection>& conn, ssize_t sent, bool probe) {
-    if (sent > 0 && !probe) {
+// 出站写出去了算一次活跃，但只对未升级的连接
+// 已升级的连接由应用层起搏证明自己活着，往它上面写成功说明不了对端还在
+static void stamp_outbound(const std::shared_ptr<Connection>& conn, ssize_t sent) {
+    if (sent > 0 && !conn->ws_mode_) {
         conn->last_activity_ = std::chrono::steady_clock::now();
     }
 }
@@ -19,16 +19,52 @@ static void stamp_activity(const std::shared_ptr<Connection>& conn, ssize_t sent
 WriteScheduler::WriteScheduler(EventLoop& loop, DelConnectionFn del_conn)
     : loop_(loop), del_connection_(std::move(del_conn)) {}
 
-// 入队后立即排空，只由本 loop 归属线程调用
+// 立刻把这一帧发给连接，没发完的部分转由 EPOLLOUT 推进
+// 本函数不重入：它调出去的 handle_write 与 del_connection 一路到底都不回到这里
+// 所以同连接的帧序就是调用序，中间不需要队列
 void WriteScheduler::enqueue(const std::shared_ptr<Connection>& conn, std::string data) {
-    this->queue_.emplace(PendingResponse{conn, std::move(data), false});
-    this->drain();
-}
+    // 连接已从循环拆除则丢弃 alive 在 io 关闭路径与摘除同步置 false
+    if (!conn->sess_->alive_) {
+        return;
+    }
 
-// 心跳探测帧与业务帧同路发出，区别只在写出去了不算出站推进
-void WriteScheduler::enqueue_probe(const std::shared_ptr<Connection>& conn, std::string data) {
-    this->queue_.emplace(PendingResponse{conn, std::move(data), true});
-    this->drain();
+    // 该连接已有未发完数据，先追加保持帧顺序，再立刻尝试发送
+    // 追加前判上限，慢客户端让缓冲一直涨，超限直接断开不再接收新帧
+    if (this->pending_bytes(conn) != 0) {
+        if (this->pending_bytes(conn) > kMaxPendingBytes) {
+            this->del_connection_(conn);
+            return;
+        }
+        this->pending_writes_[conn].append(std::move(data));
+        this->handle_write(conn);
+        return;
+    }
+
+    const int fd = conn->sess_->fd_;
+    auto [sent, failed] = this->try_send(fd, data);
+    if (failed) {
+        // 硬错误直接收，未发段没有重试价值
+        this->del_connection_(conn);
+        return;
+    }
+    stamp_outbound(conn, sent);
+    // 没发完，未发段进待写缓冲，注册写事件
+    if (sent < static_cast<ssize_t>(data.size())) {
+        this->pending_writes_[conn].append(data.data() + sent,
+                                           data.size() - static_cast<size_t>(sent));
+        // 写事件挂不上等于这条连接再也发不出去，直接收
+        if (!this->loop_.mod_event(fd, EPOLLIN | EPOLLET | EPOLLOUT)) {
+            this->del_connection_(conn);
+            return;
+        }
+        // 立即尝试冲刷防 ET 饥饿
+        this->handle_write(conn);
+        return;
+    }
+    // 缓冲已空，请求过冲刷后关闭的在此收
+    if (this->closing_.find(conn) != this->closing_.end() && this->pending_bytes(conn) == 0) {
+        this->del_connection_(conn);
+    }
 }
 
 void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
@@ -50,8 +86,7 @@ void WriteScheduler::handle_write(const std::shared_ptr<Connection>& conn) {
         this->del_connection_(conn);
         return;
     }
-    // 这里已看不出攒下来的是哪一路帧，只可能是有积压时的补发，此时出站本就新鲜
-    stamp_activity(conn, sent, false);
+    stamp_outbound(conn, sent);
     // 完成发送
     if (sent >= static_cast<ssize_t>(buf.size())) {
         this->pending_writes_.erase(conn);
@@ -81,66 +116,6 @@ void WriteScheduler::request_close(const std::shared_ptr<Connection>& conn) {
 void WriteScheduler::remove_pending(const std::shared_ptr<Connection>& conn) {
     this->pending_writes_.erase(conn);
     this->closing_.erase(conn);
-}
-
-bool WriteScheduler::is_closing(const std::shared_ptr<Connection>& conn) const {
-    return this->closing_.find(conn) != this->closing_.end();
-}
-
-// 排空待发队列，处理期间新入队的由下一轮收
-void WriteScheduler::drain() {
-    std::queue<PendingResponse> local{};
-    std::swap(local, this->queue_);
-
-    while (!local.empty()) {
-        auto item = std::move(local.front());
-        local.pop();
-
-        int fd = item.conn_->sess_->fd_;
-        // 连接已从循环拆除则丢弃 alive 在 io 关闭路径与摘除同步置 false
-        if (!item.conn_->sess_->alive_) {
-            continue;
-        }
-
-        // 该连接已有未发完数据，先追加保持帧顺序，再立刻尝试发送
-        // 追加前判上限，慢客户端让缓冲一直涨，超限直接断开不再接收新帧
-        if (this->pending_bytes(item.conn_) != 0) {
-            if (this->pending_bytes(item.conn_) > kMaxPendingBytes) {
-                this->del_connection_(item.conn_);
-                continue;
-            }
-            this->pending_writes_[item.conn_].append(std::move(item.data_));
-            this->handle_write(item.conn_);
-            continue;
-        }
-
-        std::string& wire = item.data_;
-        auto [sent, failed] = this->try_send(fd, wire);
-
-        if (failed) {
-            // 硬错误直接收，未发段没有重试价值
-            this->del_connection_(item.conn_);
-            continue;
-        }
-        stamp_activity(item.conn_, sent, item.probe_);
-        // 没发完，未发段进待写缓冲，注册写事件
-        if (sent < static_cast<ssize_t>(wire.size())) {
-            this->pending_writes_[item.conn_].append(wire.data() + sent, wire.size() - sent);
-            // 写事件挂不上等于这条连接再也发不出去，直接收
-            if (!this->loop_.mod_event(fd, EPOLLIN | EPOLLET | EPOLLOUT)) {
-                this->del_connection_(item.conn_);
-                continue;
-            }
-            // 立即尝试冲刷防 ET 饥饿
-            this->handle_write(item.conn_);
-            continue;
-        }
-        // 本批发完且缓冲已空，请求过冲刷后关闭的在此收
-        if (this->closing_.find(item.conn_) != this->closing_.end() && 
-            this->pending_bytes(item.conn_) == 0) {
-            this->del_connection_(item.conn_);
-        }
-    }
 }
 
 // 该连接待写缓冲的字节数，无缓冲为 0
