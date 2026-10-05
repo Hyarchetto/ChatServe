@@ -13,8 +13,7 @@ public:
     WsFrame() = delete;
 
     // 构造一个 WebSocket 帧，服务器发客户端无需掩码
-    static std::string build(WsOpcode opcode,
-                              const std::string& payload);
+    static std::string build(WsOpcode opcode, std::string_view payload);
 
     // 一次构建多段载荷的帧，避免逐段拼接产生临时串
     static std::string build_from_parts(WsOpcode opcode,

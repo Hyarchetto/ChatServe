@@ -24,8 +24,15 @@ public:
     void append(const std::string& s) { 
         data_.append(s); 
     }
-    void append(std::string&& s) { 
-        data_.append(std::move(s)); 
+    // 追加 s 从 offset 起的部分
+    // offset 为 0 且缓冲空着时直接接管 s 的缓冲，省一次整块拷贝
+    void append(std::string&& s, size_t offset = 0) {
+        if (offset == 0 && this->empty()) {
+            data_ = std::move(s);
+            head_ = 0;
+            return;
+        }
+        data_.append(s, offset, std::string::npos);
     }
 
     // 消费 n 字节 

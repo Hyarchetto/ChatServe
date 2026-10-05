@@ -1,4 +1,4 @@
-// HttpHandler — HTTP 协议决策器，纯函数实现
+// HttpHandler — HTTP 协议决策器实现
 #include "http/HttpHandler.h"
 
 #include <string_view>
@@ -9,11 +9,11 @@
 #include "http/HttpResponse.h"
 #include "http/ErrorResponse.h"
 
-HttpAction HttpHandler::handle(std::string_view buf) {
+HttpAction HttpHandler::handle(std::string_view buf, HttpRequestState& st) const {
     HttpAction action;
     while (true) {
         // 从已消耗位置续解析，支持同段到达的多个请求
-        HttpResult result = HttpParser::handle(buf.substr(action.consumed_));
+        HttpResult result = HttpParser::handle(buf.substr(action.consumed_), st);
         action.consumed_ += result.consumed_;
 
         switch (result.type_) {
@@ -23,7 +23,10 @@ HttpAction HttpHandler::handle(std::string_view buf) {
             }
             // 错误的 HTTP 请求可能是网络问题或者网络攻击，直接断开好了
             case HttpResultType::BAD_REQUEST: {
-                action.responses_.push_back( ErrorResponse::build_bad_request(result.error_msg_).serialize());
+                HttpResponse resp = ErrorResponse::build(result.error_);
+                // 回包冲刷完即断，把关闭意图写进响应头
+                resp.headers_.set("connection", "close");
+                action.responses_.push_back(resp.serialize());
                 action.close_ = true;
                 return action;
             }
@@ -35,7 +38,7 @@ HttpAction HttpHandler::handle(std::string_view buf) {
             }
             // 普通的 HTTP 请求，内联路由
             case HttpResultType::OK: {
-                action.responses_.push_back( this->http_router_.handle(result.request_).serialize());
+                action.responses_.push_back( this->http_router_.handle(std::move(result.request_)).serialize());
                 // 客户端要求关闭则回完这一条就断，后续请求不再处理
                 if (result.close_) {
                     action.close_ = true;

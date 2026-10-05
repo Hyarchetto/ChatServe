@@ -2,7 +2,6 @@
 #pragma once
 
 #include <string>
-#include <sstream>
 
 #include "HeaderMap.h"
 
@@ -14,23 +13,37 @@ struct HttpResponse {
     std::string body_;
 
     // 标准序列化：状态行 + 头部 + 空行 + body
+    // 手工拼接，body 只拷一次，不经流的缓冲与二次 crate
     std::string serialize() const {
-        std::ostringstream oss;
-        // 状态行
-        oss << version_ << ' ' << status_ << ' ' << status_text_ << "\r\n";
-
         // 调用方未显式设置 Content-Length 时才自动计算
+        // 1xx 与 204 没有 body，RFC 7230 3.3.2 禁止这两类响应带 Content-Length
         bool has_cl = this->headers_.find("Content-Length") != nullptr;
+        bool bodyless = (status_ >= 100 && status_ < 200) || status_ == 204;
+
+        std::string out;
+        // 状态行
+        out += version_;
+        out += ' ';
+        out += std::to_string(status_);
+        out += ' ';
+        out += status_text_;
+        out += "\r\n";
+
         for (auto& [k, v] : headers_) {
-            oss << k << ": " << v << "\r\n";
+            out += k;
+            out += ": ";
+            out += v;
+            out += "\r\n";
         }
-        if (!has_cl) {
-            oss << "content-length: " << body_.size() << "\r\n";
+        if (!has_cl && !bodyless) {
+            out += "content-length: ";
+            out += std::to_string(body_.size());
+            out += "\r\n";
         }
         // 空行
-        oss << "\r\n";
+        out += "\r\n";
         // body
-        oss << body_;
-        return oss.str();
+        out += body_;
+        return out;
     }
 };

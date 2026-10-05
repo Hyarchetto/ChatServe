@@ -40,7 +40,7 @@ static std::string client_frame(WsOpcode opcode, std::string_view payload, bool 
 TEST(ws_parser_reads_single_text_frame) {
     WsFragmentState frag;
     std::string wire = client_frame(WsOpcode::TEXT, "hello");
-    WsResult r = WsParser::handle(wire, &frag);
+    WsResult r = WsParser::handle(wire, frag);
     CHECK(!r.close_);
     CHECK_EQ(r.consumed_, wire.size());
     CHECK_EQ(r.messages_.size(), size_t(1));
@@ -54,7 +54,7 @@ TEST(ws_parser_unmasks_binary_payload) {
         payload[i] = static_cast<char>(i & 0x7F);
     }
     std::string wire = client_frame(WsOpcode::BINARY, payload);
-    WsResult r = WsParser::handle(wire, &frag);
+    WsResult r = WsParser::handle(wire, frag);
     CHECK_EQ(r.binary_messages_.size(), size_t(1));
     CHECK_EQ(r.binary_messages_[0], payload);
 }
@@ -63,7 +63,7 @@ TEST(ws_parser_leaves_partial_frame_unconsumed) {
     // 头部齐了但 payload 没到齐，一个字节都不消耗
     WsFragmentState frag;
     std::string wire = client_frame(WsOpcode::TEXT, "hello");
-    WsResult r = WsParser::handle(wire.substr(0, wire.size() - 2), &frag);
+    WsResult r = WsParser::handle(wire.substr(0, wire.size() - 2), frag);
     CHECK_EQ(r.consumed_, size_t(0));
     CHECK(r.messages_.empty());
 }
@@ -72,7 +72,7 @@ TEST(ws_parser_joins_fragments_into_one_message) {
     WsFragmentState frag;
     std::string wire = client_frame(WsOpcode::TEXT, "hel", false) +
                        client_frame(WsOpcode::CONTINUATION, "lo", true);
-    WsResult r = WsParser::handle(wire, &frag);
+    WsResult r = WsParser::handle(wire, frag);
     CHECK(!r.close_);
     CHECK_EQ(r.messages_.size(), size_t(1));
     CHECK_EQ(r.messages_[0], std::string("hello"));
@@ -83,7 +83,7 @@ TEST(ws_parser_reads_multiple_frames_in_one_buffer) {
     WsFragmentState frag;
     std::string wire = client_frame(WsOpcode::TEXT, "one") +
                        client_frame(WsOpcode::TEXT, "two");
-    WsResult r = WsParser::handle(wire, &frag);
+    WsResult r = WsParser::handle(wire, frag);
     CHECK_EQ(r.messages_.size(), size_t(2));
     CHECK_EQ(r.messages_[0], std::string("one"));
     CHECK_EQ(r.messages_[1], std::string("two"));
@@ -92,7 +92,7 @@ TEST(ws_parser_reads_multiple_frames_in_one_buffer) {
 
 TEST(ws_parser_reads_ping) {
     WsFragmentState frag;
-    WsResult r = WsParser::handle(client_frame(WsOpcode::PING, "p"), &frag);
+    WsResult r = WsParser::handle(client_frame(WsOpcode::PING, "p"), frag);
     CHECK(r.ping_);
     CHECK_EQ(r.ping_payload_, std::string("p"));
     CHECK(!r.close_);
@@ -103,21 +103,46 @@ TEST(ws_parser_closes_on_unmasked_frame) {
     WsFragmentState frag;
     std::string wire = client_frame(WsOpcode::TEXT, "hi");
     wire[1] = static_cast<char>(static_cast<uint8_t>(wire[1]) & 0x7F);
-    WsResult r = WsParser::handle(wire, &frag);
+    WsResult r = WsParser::handle(wire, frag);
     CHECK(r.close_);
+}
+
+TEST(ws_parser_closes_on_oversize_single_frame) {
+    // 整帧本身就是一条完整消息，不拆帧同样受消息上限约束
+    WsFragmentState frag;
+    std::string big(WsFragmentState::kMaxMessageBytes + 1, 'a');
+    WsResult r = WsParser::handle(client_frame(WsOpcode::TEXT, big), frag);
+    CHECK(r.close_);
+}
+
+TEST(ws_parser_rejects_bad_frame_from_header_alone) {
+    // 声明 8MB 载荷的 PING，只给 14 字节帧头，按帧头就该关，载荷一字节不给
+    WsFragmentState frag;
+    std::string full = client_frame(WsOpcode::PING, std::string(8 * 1024 * 1024, 'x'));
+    WsResult r = WsParser::handle(std::string_view(full).substr(0, 14), frag);
+    CHECK(r.close_);
+    CHECK_EQ(r.consumed_, size_t(0));   // 判错的帧不推进 pos
+}
+
+TEST(ws_parser_closes_on_reserved_opcode) {
+    // 保留 opcode 按协议错误关连接，载荷不再回显
+    WsFragmentState frag;
+    WsResult r = WsParser::handle(client_frame(static_cast<WsOpcode>(0x03), "x"), frag);
+    CHECK(r.close_);
+    CHECK(r.close_payload_.empty());
 }
 
 TEST(ws_parser_closes_on_oversize_control_frame) {
     // 控制帧 payload 上限 125 RFC 6455 §5.5
     WsFragmentState frag;
-    WsResult r = WsParser::handle(client_frame(WsOpcode::PING, std::string(126, 'x')), &frag);
+    WsResult r = WsParser::handle(client_frame(WsOpcode::PING, std::string(126, 'x')), frag);
     CHECK(r.close_);
 }
 
 TEST(ws_parser_closes_on_orphan_continuation) {
     // 无分片在途却收到 CONTINUATION
     WsFragmentState frag;
-    WsResult r = WsParser::handle(client_frame(WsOpcode::CONTINUATION, "x", true), &frag);
+    WsResult r = WsParser::handle(client_frame(WsOpcode::CONTINUATION, "x", true), frag);
     CHECK(r.close_);
 }
 
@@ -126,7 +151,7 @@ TEST(ws_parser_closes_when_data_frame_interrupts_fragments) {
     WsFragmentState frag;
     std::string wire = client_frame(WsOpcode::TEXT, "hel", false) +
                        client_frame(WsOpcode::TEXT, "oops", true);
-    WsResult r = WsParser::handle(wire, &frag);
+    WsResult r = WsParser::handle(wire, frag);
     CHECK(r.close_);
 }
 
@@ -136,6 +161,6 @@ TEST(ws_parser_closes_on_oversize_fragmented_message) {
     std::string big(WsFragmentState::kMaxMessageBytes, 'a');
     std::string wire = client_frame(WsOpcode::TEXT, big, false) +
                        client_frame(WsOpcode::CONTINUATION, "more", true);
-    WsResult r = WsParser::handle(wire, &frag);
+    WsResult r = WsParser::handle(wire, frag);
     CHECK(r.close_);
 }

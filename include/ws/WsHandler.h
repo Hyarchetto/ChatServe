@@ -22,5 +22,5 @@ class WsHandler {
 public:
     // 分帧并决策缓冲区，返回待施加决策
     // frag 为连接的续帧状态，由调用方按连接提供
-    WsAction handle(std::string_view buf, WsFragmentState* frag);
+    WsAction handle(std::string_view buf, WsFragmentState& frag) const;
 };

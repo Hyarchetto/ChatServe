@@ -1,7 +1,6 @@
 // HTTP 路由分发
 #include "http/HttpRouter.h"
 #include "http/StaticFileServer.h"
-#include "http/ErrorResponse.h"
 
 HttpRouter::HttpRouter() {
     // 注册默认路由
@@ -14,17 +13,13 @@ HttpRouter::HttpRouter() {
 
     // Vue 前端入口
     on("/chat", [](const HttpRequest&) -> HttpResponse {
-        return StaticFileServer::serve(StaticFileServer::resolve("/index.html"));
+        return StaticFileServer::serve("/index.html");
     });
 
     // 默认处理器，未匹配路径按静态文件兜底，从 static/ 目录读
-    // 路径解析交给 StaticFileServer，越出服务目录的一律当不存在
+    // 路径解析与越界判定都在 StaticFileServer 里
     on_default([](const HttpRequest& req) {
-        std::string file_path = StaticFileServer::resolve(req.path_);
-        if (file_path.empty()) {
-            return ErrorResponse::build_not_found(req.path_);
-        }
-        return StaticFileServer::serve(file_path);
+        return StaticFileServer::serve(req.path_);
     });
 }
 
@@ -36,21 +31,17 @@ void HttpRouter::on_default(Handler handler) {
     this->default_handler_ = std::move(handler);
 }
 
-HttpResponse HttpRouter::handle(const HttpRequest& req) const {
-    std::string path = req.path_;
-
-    // 去除 query string
-    if (auto qpos = path.find('?'); qpos != std::string::npos) {
-        path = path.substr(0, qpos);
+HttpResponse HttpRouter::handle(HttpRequest req) const {
+    // 去除 query string，就地截断不重新分配
+    if (auto qpos = req.path_.find('?'); qpos != std::string::npos) {
+        req.path_.resize(qpos);
     }
 
     // 精确匹配
-    if (auto it = this->handlers_.find(path); it != this->handlers_.end()) {
+    if (auto it = this->handlers_.find(req.path_); it != this->handlers_.end()) {
         return it->second(req);
     }
 
-    // 默认处理器兜底，传入已剥离 query 的请求副本
-    HttpRequest normalized = req;
-    normalized.path_ = path;
-    return this->default_handler_(normalized);
+    // 默认处理器兜底，按路径解析静态文件
+    return this->default_handler_(req);
 }

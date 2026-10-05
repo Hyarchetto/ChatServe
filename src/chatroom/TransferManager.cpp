@@ -36,7 +36,7 @@ std::string TransferManager::register_file(const std::string& filename, size_t f
     return file_id;
 }
 
-std::optional<FileRegistration> TransferManager::find_registration(const std::string& file_id) {
+std::optional<FileRegistration> TransferManager::find_registration(const std::string& file_id) const {
     std::lock_guard<std::mutex> lock(this->mtx_);
     if (auto it = this->registrations_.find(file_id); it != this->registrations_.end()) {
         return it->second;
@@ -173,7 +173,6 @@ AckResult TransferManager::handle_ack(const Session* from, uint64_t session_id, 
 
     result.valid_ = true;
     result.session_id_ = session_id;
-    result.file_id_ = ts.file_id_;
 
     // 完成判定要在清理前取走上传方，清理后就找不到会话了
     std::shared_ptr<Session> uploader = ts.uploader_;
@@ -350,7 +349,7 @@ std::optional<uint64_t> TransferManager::find_session_id(const std::string& file
     return found;
 }
 
-std::optional<NextRequest> TransferManager::try_send_next_request(TransferSession& ts) {
+std::optional<NextRequest> TransferManager::try_send_next_request(TransferSession& ts) const {
     // next_req_offset_ 越过文件末尾即所有块已请求
     if (ts.next_req_offset_ >= ts.filesize_ || !ts.has_window_space()) {
         return std::nullopt;
@@ -369,7 +368,7 @@ std::optional<NextRequest> TransferManager::try_send_next_request(TransferSessio
 
 // 从连接索引中移除会话 id，空则删该条
 void TransferManager::remove_session_ref(std::unordered_map<Session*, std::vector<uint64_t>>& map,
-                                         Session* sess, uint64_t session_id) {
+                                         Session* sess, uint64_t session_id) const {
     auto it = map.find(sess);
     if (it == map.end()) {
         return;

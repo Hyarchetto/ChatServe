@@ -49,17 +49,6 @@ void Room::del_num(const std::shared_ptr<Session>& sess) {
             }), this->connections_.end());
 }
 
-bool Room::empty() {
-    std::shared_lock<std::shared_mutex> lock(this->mtx_);
-    // 有一个成员还在就不回收，无需建整份快照
-    for (auto& e : this->connections_) {
-        if (!e.sess_.expired()) {
-            return false;
-        }
-    }
-    return true;
-}
-
 // ==================== RoomManager ====================
 
 // 全程持映射写锁，容量检查与成员快照之间房间不会被另一条线程离开并回收
@@ -69,17 +58,11 @@ JoinResult RoomManager::join_room(const std::string& room_id,
     JoinResult result;
     std::unique_lock lock(this->mtx_);
     auto it = this->rooms_.find(room_id);
-    bool created = false;
     if (it == this->rooms_.end()) {
         it = this->rooms_.emplace(room_id, std::make_shared<Room>()).first;
-        created = true;
     }
     Room& room = *it->second;
     if (!room.add_num(sess, std::move(nick))) {
-        // 现造的房间没人进得去就地回收，不留空房
-        if (created) {
-            this->rooms_.erase(it);
-        }
         return result;
     }
     result.valid_ = true;

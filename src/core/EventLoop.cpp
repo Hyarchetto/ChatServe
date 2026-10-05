@@ -66,22 +66,20 @@ void EventLoop::loop() {
 
             uint32_t flags = evs[i].events;
 
-            // 快照回调，避免执行过程中 event_map_ 被修改迭代器失效导致指针越界
-            auto read_cb = it->second.read_cb_;
-            auto write_cb = it->second.write_cb_;
-            auto err_cb = it->second.err_cb_;
+            // 快照整份回调，执行过程中它可能把自己从表里摘掉
+            auto callbacks = it->second;
 
             // 读优先，干净关闭以 EPOLLIN 呈现 recv 返回 0 即关闭
-            if (flags & EPOLLIN && read_cb) {
-                read_cb();
+            if (flags & EPOLLIN && callbacks->read_cb_) {
+                callbacks->read_cb_();
             }
             // 对端挂断 EPOLLHUP 连接错误 EPOLLERR 都走关闭回调
             // 读路径已关闭连接时 fd 已摘除，用 event_map_ 判活避免重复清理
-            if (flags & (EPOLLERR | EPOLLHUP) && err_cb && this->event_map_.count(fd)) {
-                err_cb();
+            if (flags & (EPOLLERR | EPOLLHUP) && this->event_map_.count(fd) && callbacks->err_cb_) {
+                callbacks->err_cb_();
             }
-            if (flags & EPOLLOUT && write_cb && this->event_map_.count(fd)) {
-                write_cb();
+            if (flags & EPOLLOUT && this->event_map_.count(fd) && callbacks->write_cb_) {
+                callbacks->write_cb_();
             }
         }
     }
@@ -107,9 +105,8 @@ bool EventLoop::add_event(int fd, uint32_t events,
         perror("epoll_ctl ADD");
         return false;
     }
-    this->event_map_.insert_or_assign(fd, EventCallbacks{std::move(read_cb),
-                                                         std::move(write_cb),
-                                                         std::move(err_cb)});
+    this->event_map_.insert_or_assign(fd, std::make_shared<const EventCallbacks>(
+        EventCallbacks{std::move(read_cb), std::move(write_cb), std::move(err_cb)}));
     return true;
 }
 

@@ -3,12 +3,13 @@
 
 #include <string>
 
+#include "./HttpError.h"
 #include "./HttpResponse.h"
 
 class ErrorResponse {
 public:
-    static HttpResponse build_not_found(const std::string& path = "");
-    static HttpResponse build_bad_request(const std::string& msg);
-    static HttpResponse build_payload_too_large(const std::string& msg);
-    static HttpResponse build_server_error(const std::string& msg);
+    // 按错误种类给出页面，状态码、状态文本与说明文案都按种类取
+    static HttpResponse build(HttpError err);
+    // 文案里要插文件路径，单独一个入口
+    static HttpResponse build_not_found(const std::string& path);
 };

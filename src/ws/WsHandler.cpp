@@ -7,7 +7,7 @@
 #include "ws/WsFrame.h"
 #include "ws/WsOpcode.h"
 
-WsAction WsHandler::handle(std::string_view buf, WsFragmentState* frag) {
+WsAction WsHandler::handle(std::string_view buf, WsFragmentState& frag) const {
     WsAction action;
     WsResult result = WsParser::handle(buf, frag);
     action.consumed_ = result.consumed_;

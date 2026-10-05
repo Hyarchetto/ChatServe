@@ -89,34 +89,40 @@ std::string StaticFileServer::resolve(const std::string& request_path) {
     return normalized.size() > kRoot.size() ? "./" + normalized : normalized;
 }
 
-HttpResponse StaticFileServer::serve(const std::string& file_path) {
+HttpResponse StaticFileServer::serve(const std::string& request_path) {
     HttpResponse resp;
+
+    // 解析失败说明路径非法或越出服务目录
+    std::string file_path = StaticFileServer::resolve(request_path);
+    if (file_path.empty()) {
+        return ErrorResponse::build_not_found(request_path);
+    }
 
     // 目录与设备文件不是静态资源，按未找到处理
     std::error_code ec;
     if (!std::filesystem::is_regular_file(file_path, ec)) {
-        return ErrorResponse::build_not_found(file_path);
+        return ErrorResponse::build_not_found(request_path);
     }
 
     std::ifstream file(file_path, std::ios::binary | std::ios::ate);
     if (!file) {
-        return ErrorResponse::build_not_found(file_path);
+        return ErrorResponse::build_not_found(request_path);
     }
 
     // 定位失败按未找到处理
     std::streamsize size = file.tellg();
     if (size < 0) {
-        return ErrorResponse::build_not_found(file_path);
+        return ErrorResponse::build_not_found(request_path);
     }
     // 超过上限直接拒绝，不允许大文件读进内存占着 io 线程
     if (static_cast<size_t>(size) > kMaxFileSize) {
-        return ErrorResponse::build_payload_too_large("文件超过单文件上限");
+        return ErrorResponse::build(HttpError::FILE_TOO_LARGE);
     }
     file.seekg(0, std::ios::beg);
 
     std::string buffer(static_cast<size_t>(size), '\0');
     if (!file.read(buffer.data(), size)) {
-        return ErrorResponse::build_server_error("读取文件失败");
+        return ErrorResponse::build(HttpError::READ_FAILED);
     }
 
     resp.status_ = 200;

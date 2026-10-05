@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "HttpRequest.h"
+#include "HttpRequestState.h"
 #include "HttpRouter.h"
 
 // 一条 HTTP 处理决策，由施加侧应用到连接
@@ -15,14 +16,14 @@ struct HttpAction {
     std::vector<std::string> responses_;  // 按序待发线路数据
     HttpRequest upgrade_request_;         // upgrade_ 为真时有效，交给施加侧握手
     size_t consumed_ = 0;                 // 累计已消耗字节，施加侧一次性 consume
-    bool close_ = false;                  // 关闭意图，写引擎冲刷后执行
-    bool upgrade_ = false;                // 检出 WebSocket 升级请求
+    bool close_ = false;                  // 关闭意图
+    bool upgrade_ = false;                // WebSocket 升级请求
 };
 
 class HttpHandler {
 public:
-    // 解析并路由缓冲区，返回待施加决策
-    HttpAction handle(std::string_view buf);
+    // 解析并路由缓冲区，返回待施加决策，st 是调用方按连接保管的解析进度
+    HttpAction handle(std::string_view buf, HttpRequestState& st) const;
 
 private:
     // 路由只被本类消费，路由表构造时固定，运行期只读

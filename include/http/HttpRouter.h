@@ -20,8 +20,8 @@ public:
     // 注册默认处理器，未匹配路径时兜底
     void on_default(Handler handler);
 
-    // 分发请求，返回响应
-    HttpResponse handle(const HttpRequest& req) const;
+    // 分发请求，返回响应，请求按值接手，路径就地剥掉 query
+    HttpResponse handle(HttpRequest req) const;
 
 private:
     std::unordered_map<std::string, Handler> handlers_;

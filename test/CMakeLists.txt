@@ -6,6 +6,7 @@ add_executable(chat_tests
     AppRouterTest.cpp
     BatchQueueTest.cpp
     ConnHandlerTest.cpp
+    ErrorResponseTest.cpp
     HeartbeatTest.cpp
     HttpHandlerTest.cpp
     HttpParserTest.cpp

@@ -34,8 +34,8 @@ private:
     void handle_cmd(CtrlCmd cmd);
     // 解析一条文本命令并委托 AppRouter
     std::vector<CtrlDown> route(std::shared_ptr<Session> sess, const std::string& text);
-    // 把一条二进制分块委托 AppRouter 转发给下载方
-    std::vector<CtrlDown> route_chunk(std::shared_ptr<Session> sess, const std::string& data);
+    // 把一条二进制分块委托 AppRouter 转发给下载方，分块按值接手一路移下去
+    std::vector<CtrlDown> route_chunk(std::shared_ptr<Session> sess, std::string data);
 
     ThreadPool& works_;                 // 注入，工厂持有，生命周期长于本对象
     ResultBox* result_box_ = nullptr;   // 中控持有，仅借用

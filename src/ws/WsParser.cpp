@@ -5,7 +5,8 @@
 #include "ws/WsParser.h"
 #include "ws/WsFrame.h"
 
-static constexpr size_t kMaxFramePayloadLen = 64 * 1024 * 1024;   // 单帧 payload 上限 64MB
+// 单帧上限取自消息上限，整帧本身就是一条完整消息
+static constexpr size_t kMaxFramePayloadLen = WsFragmentState::kMaxMessageBytes;
 static constexpr size_t kMaxControlPayloadLen = 125;              // RFC 6455 §5.5 控制帧 payload 上限
 
 // 按起始 opcode 投递完整消息到对应列表
@@ -18,9 +19,41 @@ static void deliver_message(WsOpcode opcode, std::string message, WsResult& resu
     }
 }
 
+// 只依赖帧头的协议错误，命中即该关连接
+// 判据只看 opcode、FIN、声明长度与已累积的分片状态，不看载荷
+static bool is_rejected_by_header(WsOpcode opcode, bool fin, uint64_t payload_len,
+                                  const WsFragmentState& frag) {
+    // 声明长度先判，后面的累加才不会有回绕
+    if (payload_len > kMaxFramePayloadLen) {
+        return true;
+    }
+    if (opcode == WsOpcode::PING || opcode == WsOpcode::PONG || opcode == WsOpcode::CLOSE) {
+        // RFC 6455 §5.5 要求控制帧 FIN 必须为 1 且 payload 不超过 125 字节
+        return !fin || payload_len > kMaxControlPayloadLen;
+    }
+    uint8_t opcode_val = static_cast<uint8_t>(opcode);
+    // 保留 opcode，RFC 6455 要求关闭连接
+    if ((opcode_val >= 0x03 && opcode_val <= 0x07) ||
+        (opcode_val >= 0x0B && opcode_val <= 0x0F)) {
+        return true;
+    }
+    if (opcode == WsOpcode::CONTINUATION) {
+        // 孤儿 continuation：无分片在途，RFC 6455 §5.4 要求关闭连接
+        if (!frag.in_fragmented_) {
+            return true;
+        }
+        // 单帧上限挡不住拆成很多帧累积，同一条消息也要有总量上限
+        return frag.buffer_.size() + static_cast<size_t>(payload_len) > WsFragmentState::kMaxMessageBytes;
+    }
+    // 剩下的是 TEXT/BINARY 数据帧，分片进行中又收到数据帧是协议错误
+    return frag.in_fragmented_;
+}
+
 // ==================== 帧解析 ====================
 
-WsResult WsParser::handle(std::string_view buf, WsFragmentState* frag) {
+// 帧头一解析完就把只依赖帧头的协议错误判完，再等掩码键与载荷
+// 非法帧在载荷到齐之前就被拒，省下收齐、分配与解掩码的代价
+WsResult WsParser::handle(std::string_view buf, WsFragmentState& frag) {
     WsResult result;
 
     size_t pos = 0;
@@ -43,7 +76,7 @@ WsResult WsParser::handle(std::string_view buf, WsFragmentState* frag) {
             payload_len = (static_cast<uint64_t>(static_cast<uint8_t>(buf[pos + 2])) << 8) |
                                                  static_cast<uint8_t>(buf[pos + 3]);
             header_size = 4;
-        } 
+        }
         else if (payload_len == 127) {
             if (buf.size() - pos < 10) break;
             payload_len = 0;
@@ -59,17 +92,18 @@ WsResult WsParser::handle(std::string_view buf, WsFragmentState* frag) {
             result.close_ = true;
             break;
         }
+
+        // 帧头能判的错误到此判完，判错的帧不推进 pos 也不等载荷
+        WsOpcode opcode = static_cast<WsOpcode>(opcode_val);
+        if (is_rejected_by_header(opcode, fin, payload_len, frag)) {
+            result.close_ = true;
+            break;
+        }
+
         uint8_t masking_key[4];
         if (buf.size() - pos < header_size + 4) break;
         std::memcpy(masking_key, buf.data() + pos + header_size, 4);
         header_size += 4;
-
-        // 单帧 payload 超限直接关闭连接：不推进 pos 也不跳过
-        // 若按 header_size + payload_len 推进，payload_len 接近 2^64 时加法会回绕成 0，造成无限循环
-        if (payload_len > kMaxFramePayloadLen) {
-            result.close_ = true;
-            break;
-        }
 
         // 检查数据是否完整
         if (buf.size() - pos < header_size + static_cast<size_t>(payload_len)) break;
@@ -81,70 +115,37 @@ WsResult WsParser::handle(std::string_view buf, WsFragmentState* frag) {
 
         pos += header_size + payload_len;
 
-        // 处理 opcode
-        WsOpcode opcode = static_cast<WsOpcode>(opcode_val);
-
-        // 控制帧：RFC 6455 §5.5 要求 FIN 必须为 1 且 payload ≤ 125 字节
+        // 控制帧，FIN 与载荷上限已在帧头阶段判过
         if (opcode == WsOpcode::PING || opcode == WsOpcode::PONG ||
             opcode == WsOpcode::CLOSE) {
-            if (!fin || payload.size() > kMaxControlPayloadLen) {
-                result.close_ = true;
-                break;
-            }
             if (opcode == WsOpcode::PING) {
                 result.ping_ = true;
-                result.ping_payload_ = payload;
+                result.ping_payload_ = std::move(payload);
             }
             else if (opcode == WsOpcode::CLOSE) {
                 result.close_ = true;
-                result.close_payload_ = payload;
+                result.close_payload_ = std::move(payload);
             }
             continue;  // PONG 忽略
         }
 
-        // 保留 opcode，RFC 6455 要求关闭连接
-        if ((opcode_val >= 0x03 && opcode_val <= 0x07) ||
-            (opcode_val >= 0x0B && opcode_val <= 0x0F)) {
-            result.close_ = true;
-            result.close_payload_ = payload;
-            continue;
-        }
-
-        // 数据帧
+        // 数据帧，分片相关的错误已在帧头阶段判过
         if (opcode == WsOpcode::CONTINUATION) {
-            // 孤儿 continuation：无分片在途，RFC 6455 §5.4 要求关闭连接
-            if (!(frag && frag->in_fragmented_)) {
-                result.close_ = true;
-                break;
-            }
-            // 单帧上限挡不住拆成很多帧累积，同一条消息也要有总量上限
-            if (frag->buffer_.size() + payload.size() > WsFragmentState::kMaxMessageBytes) {
-                result.close_ = true;
-                break;
-            }
-            frag->buffer_.append(payload);
+            frag.buffer_.append(payload);
             if (fin) {
-                deliver_message(frag->first_opcode_, std::move(frag->buffer_), result);
-                frag->buffer_.clear();
-                frag->in_fragmented_ = false;
+                deliver_message(frag.first_opcode_, std::move(frag.buffer_), result);
+                frag.buffer_.clear();
+                frag.in_fragmented_ = false;
             }
+        }
+        else if (fin) {
+            deliver_message(opcode, std::move(payload), result);
         }
         else {
-            // TEXT/BINARY 数据帧
-            // 分片进行中收到新的数据帧：RFC 6455 §5.4 协议错误，关闭连接
-            if (frag && frag->in_fragmented_) {
-                result.close_ = true;
-                break;
-            }
-            if (fin) {
-                deliver_message(opcode, std::move(payload), result);
-            }
-            else if (frag) {
-                // 分片开始
-                frag->in_fragmented_ = true;
-                frag->first_opcode_ = opcode;
-                frag->buffer_ = std::move(payload);
-            }
+            // 分片开始
+            frag.in_fragmented_ = true;
+            frag.first_opcode_ = opcode;
+            frag.buffer_ = std::move(payload);
         }
     }
 

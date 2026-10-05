@@ -47,8 +47,6 @@ private:
     bool add_num(const std::shared_ptr<Session>& sess, std::string nick);
     // 移除连接
     void del_num(const std::shared_ptr<Session>& sess);
-    // 房间是否已无成员，按弱引用能否转活判断
-    bool empty();
 
     std::vector<Entry> connections_;                        // 房间成员
     TransferManager transfer_mgr_;                          // 传输管理器

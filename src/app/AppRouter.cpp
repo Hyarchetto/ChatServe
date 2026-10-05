@@ -67,7 +67,7 @@ void AppRouter::on(const std::string& command, Handler handler) {
 }
 
 // 广播帧给成员快照里除 except 外的所有 Session
-void AppRouter::broadcast_except(const std::vector<Room::Member>& live, Session* except,
+void AppRouter::broadcast_except(const std::vector<Room::Member>& live, const Session* except,
                                  const std::string& text, std::vector<CtrlDown>& results) {
     for (auto& m : live) {
         if (m.sess_.get() != except) {
@@ -77,7 +77,7 @@ void AppRouter::broadcast_except(const std::vector<Room::Member>& live, Session*
 }
 
 // 广播帧给一个房间里除 except 外的所有 Session，房间为空即无对象可发
-void AppRouter::broadcast_to_room(const std::shared_ptr<Room>& room, Session* except,
+void AppRouter::broadcast_to_room(const std::shared_ptr<Room>& room, const Session* except,
                                   const std::string& text, std::vector<CtrlDown>& results) {
     if (!room) {
         return;

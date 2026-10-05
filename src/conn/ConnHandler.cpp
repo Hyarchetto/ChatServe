@@ -75,7 +75,7 @@ void ConnHandler::close_connection(const std::shared_ptr<Connection>& conn) {
         CtrlUp up;
         up.kind_ = CtrlUpKind::CLOSED;
         up.sess_ = conn->sess_;
-        this->uplink(up);
+        this->uplink(std::move(up));
     }
 }
 
@@ -94,66 +94,64 @@ void ConnHandler::on_tick(std::chrono::steady_clock::time_point now) {
         snapshot.push_back(entry.second);
     }
 
-    std::chrono::milliseconds oldest{0};
     size_t closed = 0;
     for (auto& conn : snapshot) {
         const auto idle = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - conn->last_activity_);
         if (Heartbeat::is_expired(idle)) {
-            oldest = std::max(oldest, idle);
             this->close_connection(conn);
             ++closed;
         }
     }
-    // 汇总一行，一个节拍里可能收掉上千条，逐条打会和其他线程的输出交错
+    // 汇总一行，逐条可能会和其他线程的输出交错
     if (closed > 0) {
-        std::cerr << "心跳超时关闭 " << closed << " 条 最早空闲 " << oldest.count()
-                  << "ms" << std::endl;
+        std::cerr << "心跳超时关闭 " << closed << " 条" << std::endl;
     }
 }
 
 // ======================================== 读取与分流 ========================================
-bool ConnHandler::pump_read(const std::shared_ptr<Connection>& conn) {
-    int client_fd = conn->sess_->fd_;
+// 读一块就解析一块，缓冲里只留没解析完的部分
+// 施加决策时会经写引擎同步关连接，循环条件据此提前收尾
+void ConnHandler::handle_client_fd(const std::shared_ptr<Connection>& conn) {
     char temp_buffer[kBufferSize];
 
-    while (true) {
-        ssize_t n = recv(client_fd, temp_buffer, sizeof(temp_buffer), 0);
+    while (conn->sess_->alive_) {
+        ssize_t n = recv(conn->sess_->fd_, temp_buffer, sizeof(temp_buffer), 0);
         if (n > 0) {
             // 收到任何字节都算一次活跃，客户端的应用层起搏是主要刷新来源
             conn->last_activity_ = std::chrono::steady_clock::now();
             conn->read_buf_.append(temp_buffer, static_cast<size_t>(n));
-            continue;
         }
-        if (n == 0) {
+        else if (n == 0) {
             this->close_connection(conn);
-            return false;
-        }
-        if (errno == EAGAIN) {
             break;
         }
-        if (errno == EINTR) {
+        else if (errno == EAGAIN) {
+            break;
+        }
+        else if (errno == EINTR) {
             continue;
         }
-        perror("recv");
-        this->close_connection(conn);
-        return false;
-    }
-    return true;
-}
+        else {
+            perror("recv");
+            this->close_connection(conn);
+            break;
+        }
 
-void ConnHandler::handle_client_fd(const std::shared_ptr<Connection>& conn) {
-    if (!this->pump_read(conn) || conn->read_buf_.empty()) {
-        return;
-    }
-    // 未升级走 HTTP 决策并施加，升级握手在施加里完成
-    if (!conn->ws_mode_) {
-        this->handle_http(conn, this->http_.handle({conn->read_buf_.data(), conn->read_buf_.size()}));
-    }
-    // 已是 WS 或刚升级，同段到达的首批 WS 帧当帧处理
-    if (conn->ws_mode_ && !conn->read_buf_.empty()) {
-        this->handle_ws(conn, this->ws_.handle({conn->read_buf_.data(), conn->read_buf_.size()},
-                                               &conn->ws_frag_));
+        // 未升级走 HTTP 决策并施加，升级握手在施加里完成
+        if (!conn->ws_mode_) {
+            this->handle_http(conn, this->http_.handle({conn->read_buf_.data(), conn->read_buf_.size()},
+                                                       conn->http_state_));
+            // 施加这条链可能已经关了连接，就此退出
+            if (!conn->sess_->alive_) {
+                break;
+            }
+        }
+        // 已是 WS 或刚升级，同段到达的首批 WS 帧当帧处理
+        if (conn->ws_mode_ && !conn->read_buf_.empty()) {
+            this->handle_ws(conn, this->ws_.handle({conn->read_buf_.data(), conn->read_buf_.size()},
+                                                   conn->ws_frag_));
+        }
     }
 }
 
@@ -169,6 +167,10 @@ void ConnHandler::handle_http(const std::shared_ptr<Connection>& conn, HttpActio
         HttpResponse resp = WsUpgradeResponse::build(action.upgrade_request_);
         conn->ws_mode_ = (resp.status_ == 101);
         want_close = want_close || !conn->ws_mode_;
+        if (!conn->ws_mode_) {
+            // 握手失败回 400 后断开，把关闭意图写进响应头
+            resp.headers_.set("connection", "close");
+        }
         // 先定 ws_mode_ 再出包，出包若同步失败触发的关闭才判得对要不要报 CLOSED
         this->writer_.enqueue(conn, resp.serialize());
     }
@@ -222,6 +224,6 @@ void ConnHandler::downlink_batch(std::vector<CtrlDown>& downs) {
         const WsOpcode opcode = (down.kind_ == CtrlDownKind::WS_BINARY)
                                     ? WsOpcode::BINARY
                                     : WsOpcode::TEXT;
-        this->writer_.enqueue(it->second, WsFrame::build(opcode, std::move(down.text_)));
+        this->writer_.enqueue(it->second, WsFrame::build(opcode, down.text_));
     }
 }

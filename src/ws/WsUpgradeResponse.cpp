@@ -8,7 +8,7 @@
 HttpResponse WsUpgradeResponse::build(const HttpRequest& req) {
     auto key = req.headers_.find("Sec-WebSocket-Key");
     if (!key) {
-        return ErrorResponse::build_bad_request("Missing Sec-WebSocket-Key");
+        return ErrorResponse::build(HttpError::MISSING_WS_KEY);
     }
 
     // RFC 6455 §4.2.2 含 Errata: SHA1 key + magic GUID 结果 base64 编码
@@ -36,6 +36,6 @@ HttpResponse WsUpgradeResponse::build(const HttpRequest& req) {
     resp.status_text_ = "Switching Protocols";
     resp.headers_.set("upgrade", "websocket");
     resp.headers_.set("connection", "Upgrade");
-    resp.headers_.set("sec-websocket-accept", base64.substr(0, 28));
+    resp.headers_.set("sec-websocket-accept", base64);
     return resp;
 }

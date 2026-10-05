@@ -3,7 +3,7 @@
 
 // ==================== 帧构造 ====================
 
-std::string WsFrame::build(WsOpcode opcode, const std::string& payload) {
+std::string WsFrame::build(WsOpcode opcode, std::string_view payload) {
     return build_from_parts(opcode, {payload});
 }
 

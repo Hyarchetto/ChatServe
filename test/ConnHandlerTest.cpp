@@ -1,4 +1,4 @@
-// ConnHandler 用例 — 心跳扫描的两条分支
+// ConnHandler 用例 — 心跳扫描与升级握手的回包形态
 #include "TestMain.h"
 
 #include <sys/socket.h>
@@ -78,6 +78,8 @@ TEST(conn_handler_stays_silent_on_idle_websocket) {
         resp.append(tmp, static_cast<size_t>(n));
     }
     CHECK(resp.find("101") != std::string::npos);
+    // 1xx 无 body，握手响应不该带 Content-Length
+    CHECK(resp.find("content-length") == std::string::npos);
 
     // 注入未来的时刻驱动节拍，经 post 仍在 io 线程执行
     // 取六十秒未到硬超时，连接不该被判死，服务端也不该主动发任何帧
@@ -94,6 +96,66 @@ TEST(conn_handler_stays_silent_on_idle_websocket) {
         f.handler_.on_tick(std::chrono::steady_clock::now() + std::chrono::seconds(100));
     });
     CHECK_EQ(recv(sv[1], buf, sizeof(buf), 0), ssize_t(0));  // 对端已关闭
+
+    f.loop_.quit();
+    runner.join();
+    close(sv[1]);
+}
+
+TEST(conn_handler_announces_close_on_failed_upgrade) {
+    Fixture f;
+    int sv[2];
+    make_pair(sv);
+    f.handler_.add_connection(sv[0]);
+
+    std::thread runner([&f]() { f.loop_.loop(); });
+
+    // 缺 Sec-WebSocket-Key 的升级请求握手失败，回 400 后断开
+    const std::string req =
+        "GET /chat HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+    CHECK_EQ(send(sv[1], req.data(), req.size(), 0), ssize_t(req.size()));
+
+    std::string resp;
+    char tmp[512];
+    while (resp.find("\r\n\r\n") == std::string::npos) {
+        ssize_t n = recv(sv[1], tmp, sizeof(tmp), 0);
+        if (n <= 0) {
+            break;
+        }
+        resp.append(tmp, static_cast<size_t>(n));
+    }
+    CHECK(resp.find("400") != std::string::npos);
+    CHECK(resp.find("connection: close") != std::string::npos);
+
+    f.loop_.quit();
+    runner.join();
+    close(sv[1]);
+}
+
+TEST(conn_handler_parses_request_split_across_reads) {
+    Fixture f;
+    int sv[2];
+    make_pair(sv);
+    f.handler_.add_connection(sv[0]);
+
+    std::thread runner([&f]() { f.loop_.loop(); });
+
+    // 头块远超单次 recv 缓冲，服务端要分多轮读入再拼起来解析
+    // 打 / 这个内联页面，绕开静态目录，用例的工作目录里没有它
+    const std::string req = "GET / HTTP/1.1\r\nHost: x\r\nX-Pad: " +
+                            std::string(8 * 1024, 'a') + "\r\n\r\n";
+    CHECK_EQ(send(sv[1], req.data(), req.size(), 0), ssize_t(req.size()));
+
+    std::string resp;
+    char tmp[1024];
+    while (resp.find("\r\n\r\n") == std::string::npos) {
+        ssize_t n = recv(sv[1], tmp, sizeof(tmp), 0);
+        if (n <= 0) {
+            break;
+        }
+        resp.append(tmp, static_cast<size_t>(n));
+    }
+    CHECK(resp.find("200") != std::string::npos);
 
     f.loop_.quit();
     runner.join();

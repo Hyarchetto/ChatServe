@@ -121,7 +121,7 @@ public:
                                const std::shared_ptr<Session>& uploader);
 
     // 查询文件注册信息，file_id 不存在时返回 nullopt
-    std::optional<FileRegistration> find_registration(const std::string& file_id);
+    std::optional<FileRegistration> find_registration(const std::string& file_id) const;
 
     // 启动传输，返回初始窗口的请求列表
     // start_offset 为断点续传的起始偏移，普通下载传 0
@@ -172,8 +172,8 @@ private:
     std::optional<uint64_t> find_session_id(const std::string& file_id,
                                             const Session* downloader) const;
     // 窗口有空位时生成下一个 DWREQ
-    std::optional<NextRequest> try_send_next_request(TransferSession& ts);
+    std::optional<NextRequest> try_send_next_request(TransferSession& ts) const;
     // 从连接索引中移除会话 id，空则删该条
     void remove_session_ref(std::unordered_map<Session*, std::vector<uint64_t>>& map,
-                            Session* sess, uint64_t session_id);
+                            Session* sess, uint64_t session_id) const;
 };

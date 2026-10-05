@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include <cstdint>
 
@@ -66,7 +67,8 @@ private:
     };
 
     // fd 到其三个回调的映射关系表
-    std::unordered_map<int, EventCallbacks> event_map_;
+    // 存 shared_ptr，取用只做一次原子自增，回调自身摘除条目后仍可安全调用
+    std::unordered_map<int, std::shared_ptr<const EventCallbacks>> event_map_;
 
     // 跨线程投递进来的待办，收成一体，攒批执行
     BatchQueue<std::function<void()>> functors_;

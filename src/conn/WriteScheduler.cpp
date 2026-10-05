@@ -50,8 +50,7 @@ void WriteScheduler::enqueue(const std::shared_ptr<Connection>& conn, std::strin
     stamp_outbound(conn, sent);
     // 没发完，未发段进待写缓冲，注册写事件
     if (sent < static_cast<ssize_t>(data.size())) {
-        this->pending_writes_[conn].append(data.data() + sent,
-                                           data.size() - static_cast<size_t>(sent));
+        this->pending_writes_[conn].append(std::move(data), static_cast<size_t>(sent));
         // 写事件挂不上等于这条连接再也发不出去，直接收
         if (!this->loop_.mod_event(fd, EPOLLIN | EPOLLET | EPOLLOUT)) {
             this->del_connection_(conn);

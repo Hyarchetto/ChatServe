@@ -17,7 +17,7 @@ static CtrlDown build_dwreq_frame(const NextRequest& req) {
 
 // 处理上传方 BINARY 分块，定位会话并转发给下载方
 std::vector<CtrlDown> AppRouter::handle_chunk(std::shared_ptr<Session> sess,
-                                              const std::string& data) {
+                                              std::string data) {
     std::vector<CtrlDown> results;
     // 未加入房间则房间查不到，房间在栈上持住让传输管理器存活到本函数结束
     auto room = this->room_mgr_.find_room(sess->room_);
@@ -40,7 +40,7 @@ std::vector<CtrlDown> AppRouter::handle_chunk(std::shared_ptr<Session> sess,
         // 原样中继分块，复用原始载荷免剥头重拼
         CtrlDown bin;
         bin.sess_ = std::move(dl);
-        bin.text_ = data;
+        bin.text_ = std::move(data);
         bin.kind_ = CtrlDownKind::WS_BINARY;
         results.push_back(std::move(bin));
     }

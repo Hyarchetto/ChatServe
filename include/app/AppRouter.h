@@ -30,8 +30,8 @@ public:
     // 断开清理，取消房间内传输并离开房间，返回发给剩余成员的帧
     std::vector<CtrlDown> cleanup(std::shared_ptr<Session> sess);
 
-    // 处理上传方 BINARY 分块，定位会话并转发给下载方
-    std::vector<CtrlDown> handle_chunk(std::shared_ptr<Session> sess, const std::string& data);
+    // 处理上传方 BINARY 分块，定位会话并转发给下载方，分块按值接手，转发时移进帧
+    std::vector<CtrlDown> handle_chunk(std::shared_ptr<Session> sess, std::string data);
 
 private:
     // 注册命令处理器
@@ -44,10 +44,10 @@ private:
     void register_heartbeat();
 
     // 广播帧给成员快照里除 except 外的所有 Session
-    static void broadcast_except(const std::vector<Room::Member>& live, Session* except,
+    static void broadcast_except(const std::vector<Room::Member>& live, const Session* except,
                                  const std::string& text, std::vector<CtrlDown>& results);
     // 广播帧给房间里除 except 外的所有 Session，房间为空直接弃包
-    static void broadcast_to_room(const std::shared_ptr<Room>& room, Session* except,
+    static void broadcast_to_room(const std::shared_ptr<Room>& room, const Session* except,
                                   const std::string& text, std::vector<CtrlDown>& results);
     // 房间内按 fd 找目标 Session 房间为空即无对象可发
     static std::shared_ptr<Session> find_peer(const std::shared_ptr<Room>& room, int target_fd);

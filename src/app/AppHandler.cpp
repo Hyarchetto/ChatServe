@@ -50,7 +50,7 @@ void AppHandler::handle_cmd(CtrlCmd cmd) {
                 frames = this->route(sess, cmd.text_);
                 break;
             case CtrlUpKind::WS_BINARY:
-                frames = this->route_chunk(sess, cmd.text_);
+                frames = this->route_chunk(sess, std::move(cmd.text_));
                 break;
             case CtrlUpKind::CLOSED:
                 frames = this->app_router_.cleanup(sess);
@@ -75,10 +75,10 @@ std::vector<CtrlDown> AppHandler::route(std::shared_ptr<Session> sess, const std
 }
 
 // 处理一个二进制分块，委托 AppRouter 转发给下载方
-std::vector<CtrlDown> AppHandler::route_chunk(std::shared_ptr<Session> sess, const std::string& data) {
+std::vector<CtrlDown> AppHandler::route_chunk(std::shared_ptr<Session> sess, std::string data) {
     std::vector<CtrlDown> frames;
     if (!sess->alive_) {
         return frames;  // io 已关，弃处理，收尾另有 CLOSED 一条
     }
-    return this->app_router_.handle_chunk(std::move(sess), data);
+    return this->app_router_.handle_chunk(std::move(sess), std::move(data));
 }

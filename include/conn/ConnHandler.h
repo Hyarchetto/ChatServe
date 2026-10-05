@@ -46,9 +46,7 @@ public:
     void on_tick(std::chrono::steady_clock::time_point now);
 
 private:
-    // 从连接读入读缓冲，返回 false 表示连接已关闭
-    bool pump_read(const std::shared_ptr<Connection>& conn);
-    // 客户端数据总入口，按 ws_mode_ 分流 HTTP 或 WS
+    // 客户端数据总入口，读一块解析一块，按 ws_mode_ 分流 HTTP 或 WS
     void handle_client_fd(const std::shared_ptr<Connection>& conn);
     // 施加一条 HTTP 决策到连接，升级握手在此完成
     void handle_http(const std::shared_ptr<Connection>& conn, HttpAction action);
@@ -58,7 +56,7 @@ private:
     void uplink(CtrlUp up);
     // 上行一条 WS 决策里的全部应用消息，文本与二进制合成一批交给中控
     void uplink_ws(const std::shared_ptr<Connection>& conn, WsAction& action);
-    // 下行邮箱回调只在本 io 线程执行，一次拿到整批，逐条 move 走内容
+    // 下行邮箱回调只在本 io 线程执行，整批一次处理
     void downlink_batch(std::vector<CtrlDown>& downs);
 
     EventLoop& loop_;                   // 本线程事件循环，writer_ 与 downlink_box_ 按引用绑定它
