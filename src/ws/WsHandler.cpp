@@ -9,27 +9,43 @@
 
 WsAction WsHandler::handle(std::string_view buf, WsFragmentState& frag) const {
     WsAction action;
-    WsResult result = WsParser::handle(buf, frag);
-    action.consumed_ = result.consumed_;
+    while (true) {
+        // 一帧一解析，从已消耗位置续
+        WsResult r = WsParser::handle(buf.substr(action.consumed_), frag);
+        action.consumed_ += r.consumed_;
 
-    // 没有可交付的内容，可能是半帧，也可能只有一条被忽略的 PONG
-    if (result.binary_messages_.empty() && result.messages_.empty() &&
-        !result.ping_ && !result.close_) {
-        return action;
+        switch (r.type_) {
+            // 凑不齐一帧，剩下的字节留给下次读事件
+            case WsResultType::INCOMPLETE: {
+                return action;
+            }
+            // 帧头即判出协议错误，回一条空 CLOSE 后断开
+            case WsResultType::BAD_FRAME: {
+                action.responses_.push_back(WsFrame::build(WsOpcode::CLOSE, {}));
+                action.close_ = true;
+                return action;
+            }
+            // 帧已吃完无产出，继续下一帧
+            case WsResultType::CONSUMED: {
+                break;
+            }
+            // 完整消息上行，中控按命令分发
+            case WsResultType::MESSAGE: {
+                (r.opcode_ == WsOpcode::BINARY ? action.binaries_ : action.messages_)
+                    .push_back(std::move(r.payload_));
+                break;
+            }
+            // PING 本地回 PONG
+            case WsResultType::PING: {
+                action.responses_.push_back(WsFrame::build(WsOpcode::PONG, r.payload_));
+                break;
+            }
+            // CLOSE 帧，回包并置关闭，写调度发完即回收
+            case WsResultType::CLOSE: {
+                action.responses_.push_back(WsFrame::build(WsOpcode::CLOSE, r.payload_));
+                action.close_ = true;
+                break;
+            }
+        }
     }
-
-    // PING 本地回 PONG
-    if (result.ping_) {
-        action.responses_.push_back(WsFrame::build(WsOpcode::PONG, result.ping_payload_));
-    }
-    // 完整 TEXT 应用消息上行，中控按命令分发
-    action.messages_ = std::move(result.messages_);
-    // 完整 BINARY 分块上行，文件分块载荷含 20B 传输头，中控定位会话转发
-    action.binaries_ = std::move(result.binary_messages_);
-    // CLOSE 帧，回包并置关闭，写调度发完即回收
-    if (result.close_) {
-        action.close_ = true;
-        action.responses_.push_back(WsFrame::build(WsOpcode::CLOSE, result.close_payload_));
-    }
-    return action;
 }

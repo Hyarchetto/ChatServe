@@ -1,6 +1,6 @@
 // WsHandler — WebSocket 协议决策器
 // 吃缓冲区字节，吐一条决策
-// 分帧委托 WsParser，组帧委托 WsFrame
+// 循环分帧直到凑不齐一帧，分帧委托 WsParser，组帧委托 WsFrame
 #pragma once
 
 #include <string>

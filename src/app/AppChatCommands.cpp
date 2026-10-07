@@ -23,8 +23,9 @@ void AppRouter::register_chat() {
         // 昵称随成员资格落进房间，满员检查与成员快照在同一把锁下完成
         JoinResult joined = this->room_mgr_.join_room(msg.param(0), sess, msg.param(1));
         if (!joined.valid_) {
-            results.push_back({sess,
-                AppParser::build_frame("SYS","ERR|房间已满（上限 " + std::to_string(Room::kMaxMembers) + " 人）")});
+            results.push_back({sess, AppParser::build_frame("SYS","ERR|房间已满（上限 " +
+                                                                  std::to_string(Room::kMaxMembers) +
+                                                                  " 人）")});
             return results;
         }
         sess->room_ = msg.param(0);

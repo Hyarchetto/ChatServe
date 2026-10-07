@@ -14,6 +14,7 @@ add_executable(chat_tests
     LockFreeQueueTest.cpp
     TimerTest.cpp
     TransferManagerTest.cpp
+    WsHandlerTest.cpp
     WsParserTest.cpp
 )
 
