@@ -56,34 +56,28 @@ void CtrlDispatcher::request_stop() {
 }
 
 // ==================== 上行邮箱，只在中控线程 ====================
-// 一轮拿到整批，本轮要投池的命令先攒在 cmds 里，循环走完一次投进去
+// 一轮拿到整批，本轮要投池的事件先攒在 batch 里，循环走完一次投进去
 // 逐条 post 的话每一条都要抢一次池的队列锁唤醒一次 worker 批量越大亏得越多
 void CtrlDispatcher::handle_uplink(std::vector<CtrlUp>& ups) {
-    std::vector<CtrlCmd> cmds;
-    cmds.reserve(ups.size());
+    std::vector<CtrlUp> batch;
+    batch.reserve(ups.size());
     for (auto& up : ups) {
         switch (up.kind_) {
             case CtrlUpKind::WS_TEXT:
-            case CtrlUpKind::WS_BINARY: {
-                CtrlCmd cmd;
-                cmd.sess_ = std::move(up.sess_);
-                cmd.kind_ = up.kind_;
-                cmd.text_ = std::move(up.text_);
-                this->enqueue_cmd(std::move(cmd), cmds);
+            case CtrlUpKind::WS_BINARY:
+                this->enqueue_up(std::move(up), batch);
                 break;
-            }
-            case CtrlUpKind::CLOSED: {
-                this->handle_close(std::move(up.sess_), cmds);
+            case CtrlUpKind::CLOSED:
+                this->handle_close(std::move(up.sess_), batch);
                 break;
-            }
         }
     }
-    this->submit_cmds(std::move(cmds));
+    this->submit_ups(std::move(batch));
 }
 
-// 连接关闭，队列里那些命令对已死的连接没有意义，整批丢掉
+// 连接关闭，队列里那些事件对已死的连接没有意义，整批丢掉
 // 有在途业务就只登记，等它跑完由 advance_lane 接着收尾，没有则当场收尾
-void CtrlDispatcher::handle_close(std::shared_ptr<Session> sess, std::vector<CtrlCmd>& cmds) {
+void CtrlDispatcher::handle_close(std::shared_ptr<Session> sess, std::vector<CtrlUp>& batch) {
     Session* key = sess.get();
     auto [it, inserted] = this->lanes_.try_emplace(key);
     it->second.closing_ = true;
@@ -92,30 +86,30 @@ void CtrlDispatcher::handle_close(std::shared_ptr<Session> sess, std::vector<Ctr
         return;
     }
     it->second.sess_ = std::move(sess);
-    this->advance_lane(key, cmds);
+    this->advance_lane(key, batch);
 }
 
 // ==================== 单飞门，只在中控线程 ====================
-// 该 Session 已有操作在途则入队，否则当即开跑并攒进 cmds 待本轮一次投池
-void CtrlDispatcher::enqueue_cmd(CtrlCmd cmd, std::vector<CtrlCmd>& cmds) {
-    Session* key = cmd.sess_.get();
+// 该 Session 已有操作在途则入队，否则当即开跑并攒进 batch 待本轮一次投池
+void CtrlDispatcher::enqueue_up(CtrlUp up, std::vector<CtrlUp>& batch) {
+    Session* key = up.sess_.get();
     auto [it, inserted] = this->lanes_.try_emplace(key);
     if (!inserted) {
-        it->second.pending_.push_back(std::move(cmd));
+        it->second.pending_.push_back(std::move(up));
         return;
     }
-    it->second.sess_ = cmd.sess_;    // 车道持有会话，拷贝在前 CtrlCmd 那份随后移走
-    cmds.push_back(std::move(cmd));  // 新车道，这条命令当即开跑
+    it->second.sess_ = up.sess_;    // 车道持有会话，拷贝在前 CtrlUp 那份随后移走
+    batch.push_back(std::move(up));  // 新车道，这条事件当即开跑
 }
 
 // 一条操作结束时推进一步，收尾优先于排队，两者都没有则撤销登记
 // 有在途操作就有车道，键必在表中
-void CtrlDispatcher::advance_lane(Session* key, std::vector<CtrlCmd>& cmds) {
+void CtrlDispatcher::advance_lane(Session* key, std::vector<CtrlUp>& batch) {
     auto it = this->lanes_.find(key);
     Lane& lane = it->second;
     if (lane.closing_) {
         lane.closing_ = false;  // 排定即清，不清收尾会反复排
-        cmds.push_back(CtrlCmd{lane.sess_, CtrlUpKind::CLOSED, {}});
+        batch.push_back(CtrlUp{lane.sess_, {}, CtrlUpKind::CLOSED});
         return;
     }
     // 如果 pending_ 为空，说明代办业务已完全处理
@@ -124,17 +118,17 @@ void CtrlDispatcher::advance_lane(Session* key, std::vector<CtrlCmd>& cmds) {
         this->lanes_.erase(it);
         return;
     }
-    cmds.push_back(std::move(lane.pending_.front()));
+    batch.push_back(std::move(lane.pending_.front()));
     lane.pending_.pop_front();
 }
 
-// 一次把攒下的命令交给业务处理段投池，调用方须已在 lanes_ 中为这些 Session 占好位
-void CtrlDispatcher::submit_cmds(std::vector<CtrlCmd> cmds) {
-    if (cmds.empty()) {
+// 一次把攒下的事件交给业务处理段投池，调用方须已在 lanes_ 中为这些 Session 占好位
+void CtrlDispatcher::submit_ups(std::vector<CtrlUp> ups) {
+    if (ups.empty()) {
         return;
     }
     // 投池失败的会话通道作废，车道一并撤掉
-    for (Session* key : this->app_handler_.handle(std::move(cmds))) {
+    for (Session* key : this->app_handler_.handle(std::move(ups))) {
         this->lanes_.erase(key);
     }
 }
@@ -143,15 +137,15 @@ void CtrlDispatcher::submit_cmds(std::vector<CtrlCmd> cmds) {
 // 整批的帧合成一串一次分拣一次投放，整批的推进结果一次交给业务处理段
 void CtrlDispatcher::handle_result(std::vector<CtrlResult>& results) {
     std::vector<CtrlDown> frames;
-    std::vector<CtrlCmd> cmds;
+    std::vector<CtrlUp> batch;
     for (auto& r : results) {
         for (auto& f : r.frames_) {
             frames.push_back(std::move(f));
         }
-        this->advance_lane(r.sess_.get(), cmds);
+        this->advance_lane(r.sess_.get(), batch);
     }
     this->dispatch(std::move(frames));
-    this->submit_cmds(std::move(cmds));
+    this->submit_ups(std::move(batch));
 }
 
 // ==================== 唯一分发点，只在中控线程 ====================

@@ -14,20 +14,20 @@ void AppHandler::attach_result_box(ResultBox& box) {
     this->result_box_ = &box;
 }
 
-// 中控一轮投来的整批命令一次进池，逐条 post 会每条唤醒一次 worker
+// 中控一轮投来的整批事件一次进池，逐条 post 会每条唤醒一次 worker
 // 投递是全有或全无，失败时把一条都没进去的这批会话交回调用方收尾
-std::vector<Session*> AppHandler::handle(std::vector<CtrlCmd> cmds) {
+std::vector<Session*> AppHandler::handle(std::vector<CtrlUp> ups) {
     std::vector<Session*> keys;
-    keys.reserve(cmds.size());
-    for (auto& cmd : cmds) {
-        keys.push_back(cmd.sess_.get());
+    keys.reserve(ups.size());
+    for (auto& up : ups) {
+        keys.push_back(up.sess_.get());
     }
     try {
         std::vector<std::function<void()>> tasks;
-        tasks.reserve(cmds.size());
-        for (auto& cmd : cmds) {
-            tasks.push_back([this, cmd = std::move(cmd)]() mutable {
-                this->handle_cmd(std::move(cmd));
+        tasks.reserve(ups.size());
+        for (auto& up : ups) {
+            tasks.push_back([this, up = std::move(up)]() mutable {
+                this->handle_up(std::move(up));
             });
         }
         this->works_.post_batch(std::move(tasks));
@@ -41,16 +41,16 @@ std::vector<Session*> AppHandler::handle(std::vector<CtrlCmd> cmds) {
 }
 
 // 池线程入口，按 kind 分派，结果连同会话投回中控的结果邮箱
-void AppHandler::handle_cmd(CtrlCmd cmd) {
-    std::shared_ptr<Session> sess = std::move(cmd.sess_);
+void AppHandler::handle_up(CtrlUp up) {
+    std::shared_ptr<Session> sess = std::move(up.sess_);
     std::vector<CtrlDown> frames;
     try {
-        switch (cmd.kind_) {
+        switch (up.kind_) {
             case CtrlUpKind::WS_TEXT:
-                frames = this->route(sess, cmd.text_);
+                frames = this->route(sess, up.text_);
                 break;
             case CtrlUpKind::WS_BINARY:
-                frames = this->route_chunk(sess, std::move(cmd.text_));
+                frames = this->route_chunk(sess, std::move(up.text_));
                 break;
             case CtrlUpKind::CLOSED:
                 frames = this->app_router_.cleanup(sess);

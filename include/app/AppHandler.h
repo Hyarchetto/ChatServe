@@ -1,6 +1,6 @@
 // AppHandler — 业务处理段，应用层命令在业务池线程上处理成待发帧
 // 按值持 RoomManager 与 AppRouter，池引用注入，结果投回中控持有的结果邮箱
-// 中控投一批 CtrlCmd 进来，逐条处理，结果经结果邮箱回中控
+// 中控投一批 CtrlUp 进来，逐条处理，结果经结果邮箱回中控
 #pragma once
 
 #include <memory>
@@ -25,13 +25,13 @@ public:
     // 装配期注入中控的结果邮箱，须在任何 handle 之前完成
     void attach_result_box(ResultBox& box);
 
-    // 中控投来一批命令，造闭包安排到业务池执行，返回没能投出去的那些会话
+    // 中控投来一批上行事件，造闭包安排到业务池执行，返回没能投出去的那些会话
     // 池的投递全有或全无，返回空表示整批都投出去了
-    std::vector<Session*> handle(std::vector<CtrlCmd> cmds);
+    std::vector<Session*> handle(std::vector<CtrlUp> ups);
 
 private:
     // 池线程入口，按 kind 分派到文本路由、分块路由或收尾
-    void handle_cmd(CtrlCmd cmd);
+    void handle_up(CtrlUp up);
     // 解析一条文本命令并委托 AppRouter
     std::vector<CtrlDown> route(std::shared_ptr<Session> sess, const std::string& text);
     // 把一条二进制分块委托 AppRouter 转发给下载方，分块按值接手一路移下去

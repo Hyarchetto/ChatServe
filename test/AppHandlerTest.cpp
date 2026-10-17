@@ -65,7 +65,7 @@ TEST(app_handler_runs_text_command_on_pool_and_posts_back) {
     Fixture f;
     auto sess = std::make_shared<Session>(7, 0);
 
-    f.app_.handle({CtrlCmd{sess, CtrlUpKind::WS_TEXT, "PING|"}});
+    f.app_.handle({CtrlUp{sess, "PING|", CtrlUpKind::WS_TEXT}});
 
     CHECK(f.wait_results(1));
     std::lock_guard<std::mutex> lock(f.mtx_);
@@ -81,7 +81,7 @@ TEST(app_handler_cleans_up_on_close_without_frames) {
     auto sess = std::make_shared<Session>(9, 0);
     CHECK(sess->room_.empty());
 
-    f.app_.handle({CtrlCmd{sess, CtrlUpKind::CLOSED, ""}});
+    f.app_.handle({CtrlUp{sess, "", CtrlUpKind::CLOSED}});
 
     // 未进房的会话收尾自然无帧，但结果要照样带回中控，车道才推进得下去
     CHECK(f.wait_results(1));
@@ -97,7 +97,7 @@ TEST(app_handler_hands_back_whole_batch_when_pool_stopped) {
     f.pool_.shutdown();  // 池已停，投递必失败
 
     std::vector<Session*> failed =
-        f.app_.handle({CtrlCmd{sess, CtrlUpKind::WS_TEXT, "PING|"}});
+        f.app_.handle({CtrlUp{sess, "PING|", CtrlUpKind::WS_TEXT}});
 
     // 全有或全无，一条都没进池就整批退回，调用方据此撤车道
     CHECK_EQ(failed.size(), size_t(1));
@@ -110,8 +110,8 @@ TEST(app_handler_posts_one_result_per_command_in_batch) {
     auto second = std::make_shared<Session>(2, 0);
 
     // 一轮投两条，池线程各跑一条，回程是两条独立结果
-    f.app_.handle({CtrlCmd{first, CtrlUpKind::WS_TEXT, "PING|"},
-                   CtrlCmd{second, CtrlUpKind::WS_TEXT, "PING|"}});
+    f.app_.handle({CtrlUp{first, "PING|", CtrlUpKind::WS_TEXT},
+                   CtrlUp{second, "PING|", CtrlUpKind::WS_TEXT}});
 
     CHECK(f.wait_results(2));
     std::lock_guard<std::mutex> lock(f.mtx_);

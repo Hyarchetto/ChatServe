@@ -204,10 +204,10 @@ void ConnHandler::uplink_ws(const std::shared_ptr<Connection>& conn, WsAction& a
     std::vector<CtrlUp> ups;
     ups.reserve(action.messages_.size() + action.binaries_.size());
     for (auto& item : action.messages_) {
-        ups.push_back(CtrlUp{CtrlUpKind::WS_TEXT, conn->sess_, std::move(item)});
+        ups.push_back(CtrlUp{conn->sess_, std::move(item), CtrlUpKind::WS_TEXT});
     }
     for (auto& item : action.binaries_) {
-        ups.push_back(CtrlUp{CtrlUpKind::WS_BINARY, conn->sess_, std::move(item)});
+        ups.push_back(CtrlUp{conn->sess_, std::move(item), CtrlUpKind::WS_BINARY});
     }
     this->ctrl_uplink_box_.post_batch(std::move(ups));
 }
